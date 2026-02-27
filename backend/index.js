@@ -1,4 +1,4 @@
-require('dotenv').config();
+require("dotenv").config(); 
 const express = require('express');
 const cors = require('cors');
 const OpenAI = require('openai');
@@ -35,7 +35,20 @@ function isFiniteNumber(value) {
  */
 function tryEvaluateQuestion(question) {
   try {
-    const result = math.evaluate(question);
+    let expr = String(question || "").trim();
+    expr = expr.replace(/^\s*(please\s+)?(evaluate|compute|calculate|find)\b[:\s]*/i, "");
+    expr = expr.split(":").pop().trim();
+    expr = expr
+      .replace(/\\left|\\right/g, "")
+      .replace(/\\cdot|\\times/g, "*")
+      .replace(/\\pi/g, "pi")
+      .replace(/\\sqrt\{([^}]*)\}/g, "sqrt($1)")
+      .replace(/\\frac\{([^}]*)\}\{([^}]*)\}/g, "($1)/($2)")
+      .replace(/\^\{([^}]*)\}/g, "^($1)")
+      .replace(/\\/g, "")
+      .replace(/\{/g, "(")
+      .replace(/\}/g, ")");
+    const result = math.evaluate(expr);
     if (isFiniteNumber(result)) {
       return result;
     }
@@ -87,6 +100,28 @@ function parsePiOrNumber(str) {
 function extractNumericResultFromAnswer(text) {
   if (!text) return null;
 
+  const lastLine = String(text || "")
+    .split("\n")
+    .map(l => l.trim())
+    .filter(Boolean)
+    .pop() || "";
+
+  const fracLatex = lastLine.match(/\\frac\{\s*(-?\d+)\s*\}\{\s*(-?\d+)\s*\}/);
+  if (fracLatex) {
+    const a = Number(fracLatex[1]);
+    const b = Number(fracLatex[2]);
+    if (b !== 0) return { value: a / b };
+    return null;
+  }
+
+  const fracSimple = lastLine.match(/(-?\d+)\s*\/\s*(-?\d+)/);
+  if (fracSimple) {
+    const a = Number(fracSimple[1]);
+    const b = Number(fracSimple[2]);
+    if (b !== 0) return { value: a / b };
+    return null;
+  }
+
   const blockMatches = [...text.matchAll(/\$\$(.*?)\$\$/gs)];
   let searchSpace = text;
   if (blockMatches.length > 0) {
@@ -135,8 +170,20 @@ function extractNumericResultFromAnswer(text) {
     }
   }
 
-  // 3) Fallback: last plain numeric literal (decimal / scientific)
-  const matches = searchSpace.match(/-?\d+(\.\d+)?([eE][+-]?\d+)?/g);
+  // 3) Safe fallback: only allow plain numeric literal if expression is purely numeric
+  const rawBlock = searchSpace.trim();
+
+  // If contains letters (except scientific e/E), LaTeX commands, equals, or sqrt/fraction,
+  // do NOT fallback to a random trailing number.
+  if (
+    /[a-df-zA-DF-Z]/.test(rawBlock) ||   // letters except e/E
+    /\\sqrt|\\frac|\\pm/.test(rawBlock) ||
+    /=/.test(rawBlock)
+  ) {
+    return null;
+  }
+
+  const matches = rawBlock.match(/-?\d+(\.\d+)?([eE][+-]?\d+)?/g);
   if (!matches || matches.length === 0) return null;
 
   const raw = matches[matches.length - 1];
@@ -550,6 +597,280 @@ function verifyInequalitySolution(question, aiAnswerText) {
   };
 }
 
+function latexToMathjsMVP(expr) {
+  let s = String(expr || "")
+    .replace(/\\left|\\right/g, "")
+    .replace(/\\quad|\\,|\\;|\\:|\\!/g, " ")
+    .replace(/\\cdot|\\times/g, "*")
+    .replace(/\\pi/g, "pi")
+    .replace(/\\sqrt\{([^}]*)\}/g, "sqrt($1)")
+    .replace(/\\frac\{([^}]*)\}\{([^}]*)\}/g, "($1)/($2)")
+    .replace(/\^\{([^}]*)\}/g, "^($1)")
+    .replace(/\\/g, "")
+    .replace(/\{/g, "(")
+    .replace(/\}/g, ")")
+    .replace(/\u00b2/g, "^2")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  s = s
+    .replace(/(\d)([a-zA-Z(])/g, "$1*$2")
+    .replace(/([a-zA-Z\)])(\d)/g, "$1*$2")
+    .replace(/(\))([a-zA-Z(])/g, "$1*$2")
+    .replace(/(^|[^a-zA-Z])([a-zA-Z])\(/g, "$1$2*(");
+
+  return s;
+}
+
+function extractFinalMathLine(aiAnswerText) {
+  const text = String(aiAnswerText || "");
+  const blockMatches = [...text.matchAll(/\$\$(.*?)\$\$/gs)];
+  if (blockMatches.length > 0) {
+    return blockMatches[blockMatches.length - 1][1];
+  }
+
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .pop() || "";
+}
+
+function cleanInlineLatexText(s) {
+  return String(s || "")
+    .replace(/\\quad|\\,|\\;|\\:|\\!/g, " ")
+    .replace(/\\text\{[^}]*\}/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function verifySystemOfEquationsMVP(question, aiAnswerText) {
+  if (!question || !aiAnswerText) return { status: "unavailable" };
+
+  const normalized = String(question || "")
+    .replace(/\r?\n/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const eqRegex = /([^=]+)=([^=]+)(?=$|\band\b|,|;)/gi;
+  const equations = [];
+  let m;
+  while ((m = eqRegex.exec(normalized)) !== null) {
+  let lhs = m[1].trim();
+  let rhs = m[2].trim().replace(/[.?!]\s*$/g, "");
+
+  // Remove text before colon (e.g., "Solve the system:")
+  if (lhs.includes(":")) lhs = lhs.split(":").pop().trim();
+
+  // Remove command verbs
+  lhs = lhs.replace(/^(solve|find|determine|calculate|compute)\b[:\s]*/i, "").trim();
+
+  // NEW FIX: remove leading "and"
+  lhs = lhs.replace(/^(and)\s+/i, "").trim();
+
+  if (lhs && rhs) {
+    equations.push({ lhs, rhs });
+  }
+}
+
+  if (equations.length < 2) {
+    return { status: "unavailable" };
+  }
+
+  let assignmentText = cleanInlineLatexText(extractFinalMathLine(aiAnswerText));
+  assignmentText = assignmentText.replace(/([a-zA-Z]\s*=\s*[^,]+?)\s+(?=[a-zA-Z]\s*=)/g, "$1, ");
+
+  const scope = {};
+  const assignRegex = /([a-zA-Z])\s*=\s*([^,]+)(?:,|$)/g;
+  let a;
+  while ((a = assignRegex.exec(assignmentText)) !== null) {
+    const variable = a[1];
+    const rhsExpr = latexToMathjsMVP(a[2].trim());
+
+    let value;
+    try {
+      value = math.evaluate(rhsExpr);
+    } catch (err) {
+      return { status: "unavailable" };
+    }
+
+    if (!isFiniteNumber(value)) {
+      return { status: "unavailable" };
+    }
+    scope[variable] = value;
+  }
+
+  if (Object.keys(scope).length < 2) {
+    return { status: "unavailable" };
+  }
+
+  const tol = 1e-6;
+  const residuals = [];
+  for (const eq of equations) {
+    let lhsVal;
+    let rhsVal;
+    try {
+      lhsVal = math.evaluate(latexToMathjsMVP(eq.lhs), scope);
+      rhsVal = math.evaluate(latexToMathjsMVP(eq.rhs), scope);
+    } catch (err) {
+      return { status: "unavailable" };
+    }
+
+    if (!isFiniteNumber(lhsVal) || !isFiniteNumber(rhsVal)) {
+      return { status: "unavailable" };
+    }
+    residuals.push(Math.abs(lhsVal - rhsVal));
+  }
+
+  if (residuals.length < 2) {
+    return { status: "unavailable" };
+  }
+
+  const ok = residuals.every((r) => r <= tol);
+  if (ok) {
+    return { status: "validated", meta: { type: "system", residuals } };
+  }
+
+  return { status: "failed", meta: { type: "system", residuals } };
+}
+
+function verifyInequalityMVP(question, aiAnswerText) {
+  if (!question || !aiAnswerText) return { status: "unavailable" };
+
+  const compare = (lhs, rhs, op) => {
+    switch (op) {
+      case "<":
+        return lhs < rhs;
+      case "<=":
+        return lhs <= rhs;
+      case ">":
+        return lhs > rhs;
+      case ">=":
+        return lhs >= rhs;
+      default:
+        return false;
+    }
+  };
+
+  let normalized = normalizeInequalityOperators(String(question || ""));
+  if (normalized.includes(":")) normalized = normalized.split(":").pop();
+  normalized = normalized.replace(/\s+/g, " ").trim();
+
+  const opMatch = normalized.match(/<=|>=|<|>/);
+  if (!opMatch) return { status: "unavailable" };
+  const op = opMatch[0];
+  const idx = normalized.indexOf(op);
+  if (idx === -1) return { status: "unavailable" };
+
+  const qLhs = normalized.slice(0, idx).trim();
+  const qRhs = normalized.slice(idx + op.length).trim();
+  if (!qLhs || !qRhs) return { status: "unavailable" };
+
+  const exprVars = `${qLhs} ${qRhs}`;
+  let variable = null;
+  if (/\bx\b/.test(exprVars)) variable = "x";
+  else if (/\by\b/.test(exprVars)) variable = "y";
+  else return { status: "unavailable" };
+
+  const rawSolution = extractFinalMathLine(aiAnswerText).replace(/\\text\{\s*or\s*\}/gi, " or ");
+   let solutionText = cleanInlineLatexText(rawSolution);
+  solutionText = normalizeInequalityOperators(solutionText)
+    .replace(/\bor\b/gi, " or ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!solutionText) return { status: "unavailable" };
+
+  const regionParts = solutionText.split(/\s+or\s+/i).map((p) => p.trim()).filter(Boolean);
+  if (regionParts.length === 0 || regionParts.length > 2) {
+    return { status: "unavailable" };
+  }
+
+  const regions = [];
+  for (const part of regionParts) {
+    const rm = part.match(/^([a-zA-Z])\s*(<=|>=|<|>)\s*(.+)$/);
+    if (!rm) return { status: "unavailable" };
+
+    const varName = rm[1];
+    const regionOp = rm[2];
+    const boundExpr = latexToMathjsMVP(rm[3].trim());
+
+    if (varName !== variable) return { status: "unavailable" };
+
+    let bound;
+    try {
+      bound = math.evaluate(boundExpr);
+    } catch (err) {
+      return { status: "unavailable" };
+    }
+    if (!isFiniteNumber(bound)) return { status: "unavailable" };
+
+    regions.push({ op: regionOp, bound });
+  }
+
+  const insidePoints = [];
+  const outsidePoints = [];
+  for (const region of regions) {
+    if (region.op === "<" || region.op === "<=") {
+      insidePoints.push(region.bound - 1);
+      outsidePoints.push(region.bound + 1);
+    } else if (region.op === ">" || region.op === ">=") {
+      insidePoints.push(region.bound + 1);
+      outsidePoints.push(region.bound - 1);
+    } else {
+      return { status: "unavailable" };
+    }
+  }
+
+  if (regions.length === 2) {
+    outsidePoints.push((regions[0].bound + regions[1].bound) / 2);
+  }
+
+  const lhsExpr = latexToMathjsMVP(qLhs);
+  const rhsExpr = latexToMathjsMVP(qRhs);
+
+  const testAt = (xVal) => {
+    let lhsVal;
+    let rhsVal;
+    try {
+      lhsVal = math.evaluate(lhsExpr, { [variable]: xVal });
+      rhsVal = math.evaluate(rhsExpr, { [variable]: xVal });
+    } catch (err) {
+      return null;
+    }
+    if (!isFiniteNumber(lhsVal) || !isFiniteNumber(rhsVal)) return null;
+    return compare(lhsVal, rhsVal, op);
+  };
+
+  const insideResults = [];
+  for (const p of insidePoints) {
+    const ok = testAt(p);
+    if (ok === null) return { status: "unavailable" };
+    insideResults.push({ x: p, ok });
+  }
+
+  const outsideResults = [];
+  for (const p of outsidePoints) {
+    const ok = testAt(p);
+    if (ok === null) return { status: "unavailable" };
+    outsideResults.push({ x: p, ok });
+  }
+
+  const allInsidePass = insideResults.every((r) => r.ok === true);
+  const allOutsideFail = outsideResults.every((r) => r.ok === false);
+
+  if (allInsidePass && allOutsideFail) {
+    return {
+      status: "validated",
+      meta: { type: "inequality-mvp", regions, insideResults, outsideResults }
+    };
+  }
+
+  return {
+    status: "failed",
+    meta: { type: "inequality-mvp", regions, insideResults, outsideResults }
+  };
+}
 /**
  * General equation validation by substitution:
  *  - Look for "lhs = rhs" in the question.
@@ -639,7 +960,10 @@ function verifyMathAnswer(question, aiAnswerText) {
   const eqCount = (question.match(/=/g) || []).length;
   if (eqCount >= 2) {
     const sys = verifySystemOfEquations(question, aiAnswerText);
-    if (sys) return sys;
+    if (sys && sys.status !== "unavailable") return sys;
+
+    const sysMVP = verifySystemOfEquationsMVP(question, aiAnswerText);
+    if (sysMVP && sysMVP.status !== "unavailable") return sysMVP;
   }
 
   // Inequality check
@@ -649,7 +973,25 @@ function verifyMathAnswer(question, aiAnswerText) {
     /\u2265|\u2264|\\ge|\\le/.test(question)
   ) {
     const ineq = verifyInequalitySolution(question, aiAnswerText);
-    if (ineq) return ineq;
+if (ineq) {
+  if (ineq.status === "validated") return ineq;
+
+  if (ineq.status === "failed") {
+    // If answer contains union-style solution, basic parser is too limited—try MVP
+    const finalMath = cleanInlineLatexText(extractFinalMathLine(aiAnswerText));
+    const unionLike = /\bor\b|\\cup|∪/i.test(finalMath);
+    if (!unionLike) return ineq;
+    // else fall through to MVP
+  }
+
+  // if unavailable, fall through to MVP
+}
+
+const ineqMVP = verifyInequalityMVP(question, aiAnswerText);
+if (ineqMVP && ineqMVP.status !== "unavailable") return ineqMVP;
+
+// If basic explicitly failed and MVP couldn't validate, return that failure
+if (ineq && ineq.status === "failed") return ineq;
   }
 
   // Pure numeric expression (no "=")
@@ -687,6 +1029,17 @@ function verifyMathAnswer(question, aiAnswerText) {
   }
 
   // Single equation by substitution
+  // Prefer math-engine parsing when the AI clearly provides "x = ..." (prevents numeric-literal mis-extraction like 22 from sqrt{22})
+  const finalMath = cleanInlineLatexText(extractFinalMathLine(aiAnswerText));
+  if (/[a-zA-Z]\s*=/.test(finalMath)) {
+  const eng = verifyWithMathEngine(question, aiAnswerText, "math");
+  if (eng && (eng.status === "validated" || eng.status === "failed")) {
+    return eng;
+  }
+  // If unavailable, fall through to other methods
+}
+
+
   const eqCheck = verifyEquationSolutionBySubstitution(question, aiAnswerText);
   if (eqCheck) {
     return eqCheck;
@@ -696,15 +1049,228 @@ function verifyMathAnswer(question, aiAnswerText) {
 }
 
 function verifyWithMathEngine(question, aiAnswerText, mode) {
-  if (!question || !aiAnswerText) {
-    return { status: "unavailable" };
+  if (mode !== "math") {
+    return { status: "unavailable", reason: "physics_not_supported" };
   }
 
-  if (mode === "math") {
-    return verifyMathAnswer(question, aiAnswerText);
+  const tol = 1e-6;
+
+  function lastNonEmptyLine(text) {
+    const lines = String(text || "")
+      .split("\n")
+      .map(l => l.trim())
+      .filter(Boolean);
+    return lines.length ? lines[lines.length - 1] : "";
   }
 
-  return { status: "unavailable" };
+  function stripLatexDelimiters(s) {
+    let t = String(s || "").trim();
+    if (t.startsWith("$$") && t.endsWith("$$") && t.length > 4) {
+      t = t.slice(2, -2).trim();
+    }
+    return t;
+  }
+
+  function extractSolution(finalLine) {
+    const line = stripLatexDelimiters(finalLine);
+    const match = line.match(/([a-zA-Z])\s*=\s*(.+)$/);
+    if (!match) return null;
+    return {
+      variable: match[1],
+      rhs: match[2].trim()
+    };
+  }
+
+  function expandPlusMinus(expr) {
+    const plusMinusChar = "\u00b1";
+    if (expr.includes("\\pm") || expr.includes(plusMinusChar)) {
+      const token = expr.includes("\\pm") ? "\\pm" : plusMinusChar;
+      const idx = expr.indexOf(token);
+      const plus = expr.slice(0, idx) + "+" + expr.slice(idx + token.length);
+      const minus = expr.slice(0, idx) + "-" + expr.slice(idx + token.length);
+      return [plus.trim(), minus.trim()];
+    }
+    return [expr.trim()];
+  }
+
+  function latexToMathjs(expr) {
+    let s = String(expr)
+      .replace(/\\left|\\right/g, "")
+      .replace(/\\quad|\\,|\\;|\\:|\\!/g, "")
+      .replace(/\\cdot|\\times/g, "*")
+      .replace(/\\pi/g, "pi")
+      .replace(/\\sqrt\{([^}]*)\}/g, "sqrt($1)")
+      .replace(/\\frac\{([^}]*)\}\{([^}]*)\}/g, "($1)/($2)")
+      .replace(/\^\{([^}]*)\}/g, "^($1)")
+      .replace(/\\/g, "")
+      .replace(/\{/g, "(")
+      .replace(/\}/g, ")")
+      .replace(/\u00b2/g, "^2")
+      .replace(/\s+/g, "")
+      .trim();
+
+    s = s
+      .replace(/(\d)([a-zA-Z(])/g, "$1*$2")
+      .replace(/([a-zA-Z\)])(\d)/g, "$1*$2")
+      .replace(/(\))([a-zA-Z(])/g, "$1*$2")
+      .replace(/(^|[^a-zA-Z])([a-zA-Z])\(/g, "$1$2*(");
+
+    return s;
+  }
+
+  function extractEquation(q) {
+    const idx = q.indexOf("=");
+    if (idx === -1) return null;
+    return {
+      lhs: q.slice(0, idx).replace(/^(solve|find)\s*/i, "").trim(),
+      rhs: q.slice(idx + 1).trim()
+    };
+  }
+
+  const finalLine = lastNonEmptyLine(aiAnswerText);
+  const parsed = extractSolution(finalLine);
+  if (!parsed) {
+    return { status: "unavailable", reason: "no_solution_extracted" };
+  }
+
+  const eq = extractEquation(question);
+  if (!eq) {
+    return { status: "unavailable", reason: "no_equation_found" };
+  }
+
+  function normalizeSolutionChunk(chunk, variable) {
+    let t = String(chunk || "").trim();
+
+    t = t.replace(/\\quad|\\,|\\;|\\:|\\!/g, "");
+
+    const m = t.match(new RegExp(String(variable) + "\\s*=\\s*(.+)$"));
+    if (m) t = m[1].trim();
+
+    return t;
+  }
+
+  let rhsBody = parsed.rhs.trim();
+  if (rhsBody.startsWith("{") && rhsBody.endsWith("}")) {
+    rhsBody = rhsBody.slice(1, -1).trim();
+  }
+
+  const solutionsRaw = rhsBody
+    .split(",")
+    .map(s => normalizeSolutionChunk(s, parsed.variable))
+    .flatMap(s => expandPlusMinus(s))
+    .filter(Boolean);
+
+  const lhsExpr = latexToMathjs(eq.lhs);
+  const rhsExpr = latexToMathjs(eq.rhs);
+
+  const residuals = [];
+
+  for (const sol of solutionsRaw) {
+    const solExpr = latexToMathjs(sol);
+
+    let xVal;
+    try {
+      xVal = math.evaluate(solExpr);
+    } catch {
+      return { status: "unavailable", reason: "solution_eval_failed" };
+    }
+
+    let lhsVal, rhsVal;
+    try {
+      lhsVal = math.evaluate(lhsExpr, { [parsed.variable]: xVal });
+      rhsVal = math.evaluate(rhsExpr, { [parsed.variable]: xVal });
+    } catch {
+      return { status: "unavailable", reason: "substitution_failed" };
+    }
+
+    const residual = math.abs(lhsVal - rhsVal);
+    residuals.push(residual);
+
+    if (residual > tol) {
+      return {
+        status: "failed",
+        reason: "residual_too_large",
+        details: { residuals, tol }
+      };
+    }
+  }
+
+  return {
+    status: "validated",
+    details: { residuals, tol }
+  };
+}
+
+function extractMathPayload(question) {
+  const original = String(question || "");
+  const s = original.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+  if (!s) return { payload: original, reason: "empty" };
+
+  const eqCount = (s.match(/=/g) || []).length;
+  if (eqCount >= 2) {
+    let cleaned = s;
+
+    cleaned = cleaned.replace(/(?:,|\band\b|\bnote that\b|\bgiven\b|\bwhere\b)\s*[a-zA-Z]\s*\(\s*[a-zA-Z]\s*\)\s*=\s*[^,.;!?]+/gi, "");
+    cleaned = cleaned.replace(/(?:,|\band\b|\bnote that\b|\bgiven\b|\bwhere\b)\s*y\s*=\s*[^,.;!?]+/gi, "");
+
+    const newEqCount = (cleaned.match(/=/g) || []).length;
+
+    if (newEqCount === 1) {
+      const idx = cleaned.indexOf("=");
+      let lhs = cleaned.slice(0, idx).trim();
+      let rhs = cleaned.slice(idx + 1).trim();
+
+      rhs = rhs.replace(/([.?!;,]).*$/g, "").trim();
+      rhs = rhs.replace(/[,:\s]+$/g, "").trim();
+
+      const lhsTailMatch = lhs.match(/([0-9a-zA-Z\(][0-9a-zA-Z\(\)\s^*+\-\/\\\.{}]+)$/);
+      if (lhsTailMatch) lhs = lhsTailMatch[1].trim();
+
+      lhs = lhs.replace(/^(given\s+that|given|assuming|suppose|let|where|if)\b[:\s]*/i, "").trim();
+
+      lhs = lhs.replace(/^(please\s+)?(solve|find|determine|calculate|compute|evaluate)\b[:\s]*/i, "").trim();
+      lhs = lhs.replace(/^for\s+[a-zA-Z]\b[:\s]*/i, "").trim();
+
+      lhs = lhs.replace(/[,:\s]+$/g, "").trim();
+      rhs = rhs.replace(/[,:\s]+$/g, "").trim();
+
+      if (lhs && rhs) {
+        return { payload: `${lhs} = ${rhs}`, reason: "equation_extracted_after_definitions_removed" };
+      }
+    }
+
+    return { payload: original, reason: "multiple_equals" };
+  }
+
+  if (eqCount === 1) {
+    const idx = s.indexOf("=");
+    if (idx === -1) return { payload: original, reason: "equation_missing" };
+
+    let lhs = s.slice(0, idx).trim();
+    let rhs = s.slice(idx + 1).trim();
+
+    rhs = rhs.replace(/([.?!;,]).*$/g, "").trim();
+    rhs = rhs.replace(/[,:\s]+$/g, "").trim();
+
+    const lhsTailMatch = lhs.match(/([0-9a-zA-Z\(][0-9a-zA-Z\(\)\s^*+\-\/\\\.{}]+)$/);
+    if (lhsTailMatch) lhs = lhsTailMatch[1].trim();
+
+    lhs = lhs.replace(/^(given\s+that|given|assuming|suppose|let|where|if)\b[:\s]*/i, "").trim();
+
+    lhs = lhs.replace(/^(please\s+)?(solve|find|determine|calculate|compute|evaluate)\b[:\s]*/i, "").trim();
+    lhs = lhs.replace(/^for\s+[a-zA-Z]\b[:\s]*/i, "").trim();
+
+    if (!lhs || !rhs) {
+      return { payload: original, reason: "equation_extract_failed" };
+    }
+
+    lhs = lhs.replace(/[,:\s]+$/g, "").trim();
+    rhs = rhs.replace(/[,:\s]+$/g, "").trim();
+
+    return { payload: `${lhs} = ${rhs}`, reason: "single_equation_extracted" };
+  }
+
+  return { payload: original, reason: "no_equals" };
 }
 
 
@@ -894,12 +1460,21 @@ RULES:
 
     const answer = completion.choices[0].message.content || '';
 
-    const verification = verifyWithMathEngine(question, answer, safeMode);
+    const { payload: mathPayload } = extractMathPayload(question);
+    let verification;
+
+    if (safeMode === "math") {
+      verification = verifyMathAnswer(mathPayload, answer);
+    } else {
+      verification = { status: "unavailable", reason: "physics_not_supported" };
+    }
 
     res.json({
       answer,
-      verificationStatus: verification.status, // 'validated' | 'unavailable'
-      verificationMeta: verification.meta || null,
+      verificationStatus: verification.status,
+      verificationDetails: verification.details || verification.meta || null,
+      verificationReason: verification.reason || null,
+      extractedMathPayload: mathPayload,
     });
   } catch (err) {
     console.error(err);
@@ -907,6 +1482,76 @@ RULES:
   }
 });
 
+function runValidationTests() {
+  console.log("=== RUNNING VALIDATION TESTS ===");
+
+  const testCases = [
+    {
+      name: "Quadratic with prose",
+      question: "Please solve for x and show steps clearly: x^2 + 6x - 5 = 8",
+      aiAnswer: "$$x = -3 + \\sqrt{22}, \\quad x = -3 - \\sqrt{22}$$",
+      expected: "validated"
+    },
+    {
+      name: "Simple linear",
+      question: "2x + 3 = 7",
+      aiAnswer: "$$x = 2$$",
+      expected: "validated"
+    },
+    {
+      name: "Numeric sin(pi/6)",
+      question: "sin(pi/6)",
+      aiAnswer: "$$\\frac{1}{2}$$",
+      expected: "validated"
+    },
+    {
+      name: "Numeric simple fraction",
+      question: "Evaluate 3/4",
+      aiAnswer: "$$3/4$$",
+      expected: "validated"
+    },
+    {
+      name: "System of equations",
+      question: "Solve the system: x + y = 3 and 2x - y = 0",
+      aiAnswer: "$$x = 1, \\quad y = 2$$",
+      expected: "validated"
+    },
+    {
+      name: "Inequality",
+      question: "Solve the inequality: x^2 - 4x + 3 > 0",
+      aiAnswer: "$$x < 1 \\quad \\text{or} \\quad x > 3$$",
+      expected: "validated"
+    }
+  ];
+
+  for (const test of testCases) {
+    const extracted = extractMathPayload(test.question);
+    const verification = verifyMathAnswer(extracted.payload, test.aiAnswer);
+
+    const status = verification.status;
+    const pass = status === test.expected;
+
+    console.log({
+      test: test.name,
+      extractedPayload: extracted.payload,
+      status,
+      expected: test.expected,
+      pass,
+      details: verification.details || verification.meta || null,
+      reason: verification.reason || null
+    });
+  }
+
+  console.log("=== TESTS COMPLETE ===");
+}
+
+if (process.env.RUN_VALIDATION_TESTS === "true") {
+  runValidationTests();
+}
 app.listen(PORT, () => {
   console.log(`Server is listening on http://localhost:${PORT}`);
 });
+
+
+
+
