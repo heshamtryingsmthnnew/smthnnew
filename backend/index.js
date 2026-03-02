@@ -4,6 +4,8 @@ const cors = require('cors');
 const OpenAI = require('openai');
 const { create, all } = require('mathjs');
 
+const BUILD_VERSION = "v1.0.0-validation-checkpoint";
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -14,9 +16,11 @@ app.use(express.json());
 const math = create(all);
 
 // OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = process.env.RUN_VALIDATION_TESTS === "true"
+  ? null
+  : new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
 
 // Simple health check
 app.get('/', (req, res) => {
@@ -657,7 +661,10 @@ function verifySystemOfEquationsMVP(question, aiAnswerText) {
   let m;
   while ((m = eqRegex.exec(normalized)) !== null) {
   let lhs = m[1].trim();
-  let rhs = m[2].trim().replace(/[.?!]\s*$/g, "");
+  let rhs = m[2].trim();
+
+ // strip common trailing punctuation that breaks mathjs (esp. ; from system join)
+ rhs = rhs.replace(/[.?!;,:\s]+$/g, "").trim();
 
   // Remove text before colon (e.g., "Solve the system:")
   if (lhs.includes(":")) lhs = lhs.split(":").pop().trim();
@@ -668,14 +675,12 @@ function verifySystemOfEquationsMVP(question, aiAnswerText) {
   // NEW FIX: remove leading "and"
   lhs = lhs.replace(/^(and)\s+/i, "").trim();
 
+  lhs = lhs.replace(/[.?!;,:\s]+$/g, "").trim();
+
   if (lhs && rhs) {
     equations.push({ lhs, rhs });
   }
 }
-
-  if (equations.length < 2) {
-    return { status: "unavailable" };
-  }
 
   let assignmentText = cleanInlineLatexText(extractFinalMathLine(aiAnswerText));
   assignmentText = assignmentText.replace(/([a-zA-Z]\s*=\s*[^,]+?)\s+(?=[a-zA-Z]\s*=)/g, "$1, ");
@@ -701,6 +706,10 @@ function verifySystemOfEquationsMVP(question, aiAnswerText) {
   }
 
   if (Object.keys(scope).length < 2) {
+    return { status: "unavailable" };
+  }
+
+  if (equations.length < 2) {
     return { status: "unavailable" };
   }
 
@@ -1203,74 +1212,78 @@ function verifyWithMathEngine(question, aiAnswerText, mode) {
 
 function extractMathPayload(question) {
   const original = String(question || "");
-  const s = original.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
-  if (!s) return { payload: original, reason: "empty" };
+  const s = original.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
+  if (!s) return { payload: original, kind: "unknown", reason: "empty" };
 
-  const eqCount = (s.match(/=/g) || []).length;
-  if (eqCount >= 2) {
-    let cleaned = s;
+  // Helper: remove easy leading verbs (optional)
+  const stripLeadVerbs = (t) =>
+    t.replace(/^(please\s+)?(solve|find|determine|calculate|compute|evaluate|simplify)\b[:\s]*/i, "").trim();
 
-    cleaned = cleaned.replace(/(?:,|\band\b|\bnote that\b|\bgiven\b|\bwhere\b)\s*[a-zA-Z]\s*\(\s*[a-zA-Z]\s*\)\s*=\s*[^,.;!?]+/gi, "");
-    cleaned = cleaned.replace(/(?:,|\band\b|\bnote that\b|\bgiven\b|\bwhere\b)\s*y\s*=\s*[^,.;!?]+/gi, "");
+  const cleaned = stripLeadVerbs(s);
 
-    const newEqCount = (cleaned.match(/=/g) || []).length;
+  // 1) Extract relation chunks (equations/inequalities) anywhere inside the string
+  // Captures "something = something", "something > something", "something <= something", etc.
+  const relRegex = /([^\s].*?)(<=|>=|=|<|>)(.*?)(?=(?:\band\b|\bor\b|,|;|$))/g;
+  const rels = [];
+  let m;
+  while ((m = relRegex.exec(cleaned)) !== null) {
+    let lhs = (m[1] || "").trim();
+    let op = m[2];
+    let rhs = (m[3] || "").trim();
 
-    if (newEqCount === 1) {
-      const idx = cleaned.indexOf("=");
-      let lhs = cleaned.slice(0, idx).trim();
-      let rhs = cleaned.slice(idx + 1).trim();
-
-      rhs = rhs.replace(/([.?!;,]).*$/g, "").trim();
-      rhs = rhs.replace(/[,:\s]+$/g, "").trim();
-
-      const lhsTailMatch = lhs.match(/([0-9a-zA-Z\(][0-9a-zA-Z\(\)\s^*+\-\/\\\.{}]+)$/);
-      if (lhsTailMatch) lhs = lhsTailMatch[1].trim();
-
-      lhs = lhs.replace(/^(given\s+that|given|assuming|suppose|let|where|if)\b[:\s]*/i, "").trim();
-
-      lhs = lhs.replace(/^(please\s+)?(solve|find|determine|calculate|compute|evaluate)\b[:\s]*/i, "").trim();
-      lhs = lhs.replace(/^for\s+[a-zA-Z]\b[:\s]*/i, "").trim();
-
-      lhs = lhs.replace(/[,:\s]+$/g, "").trim();
-      rhs = rhs.replace(/[,:\s]+$/g, "").trim();
-
-      if (lhs && rhs) {
-        return { payload: `${lhs} = ${rhs}`, reason: "equation_extracted_after_definitions_removed" };
-      }
-    }
-
-    return { payload: original, reason: "multiple_equals" };
-  }
-
-  if (eqCount === 1) {
-    const idx = s.indexOf("=");
-    if (idx === -1) return { payload: original, reason: "equation_missing" };
-
-    let lhs = s.slice(0, idx).trim();
-    let rhs = s.slice(idx + 1).trim();
-
-    rhs = rhs.replace(/([.?!;,]).*$/g, "").trim();
+    // Trim trailing punctuation/prose tail
+    rhs = rhs.replace(/([.?!]).*$/g, "").trim();
     rhs = rhs.replace(/[,:\s]+$/g, "").trim();
 
-    const lhsTailMatch = lhs.match(/([0-9a-zA-Z\(][0-9a-zA-Z\(\)\s^*+\-\/\\\.{}]+)$/);
-    if (lhsTailMatch) lhs = lhsTailMatch[1].trim();
+    // Keep only the last mathy chunk on lhs (drops arbitrary prose before it)
+    const lhsTail = lhs.match(/([0-9a-zA-Z\(][0-9a-zA-Z\(\)\s^*+\-\/\\\.{}]+)$/);
+    if (lhsTail) lhs = lhsTail[1].trim();
 
+    // Remove leading filler if it survived in the lhs tail
     lhs = lhs.replace(/^(given\s+that|given|assuming|suppose|let|where|if)\b[:\s]*/i, "").trim();
-
-    lhs = lhs.replace(/^(please\s+)?(solve|find|determine|calculate|compute|evaluate)\b[:\s]*/i, "").trim();
+    lhs = stripLeadVerbs(lhs);
     lhs = lhs.replace(/^for\s+[a-zA-Z]\b[:\s]*/i, "").trim();
-
-    if (!lhs || !rhs) {
-      return { payload: original, reason: "equation_extract_failed" };
-    }
-
     lhs = lhs.replace(/[,:\s]+$/g, "").trim();
-    rhs = rhs.replace(/[,:\s]+$/g, "").trim();
 
-    return { payload: `${lhs} = ${rhs}`, reason: "single_equation_extracted" };
+    if (lhs && rhs) rels.push({ lhs, op, rhs });
   }
 
-  return { payload: original, reason: "no_equals" };
+  // Classify if we found relations
+  if (rels.length > 0) {
+    const eqs = rels.filter(r => r.op === "=");
+    const ineqs = rels.filter(r => r.op !== "=");
+
+    // Prefer system if we have 2+ equations
+    if (eqs.length >= 2) {
+      const payload = eqs.map(r => `${r.lhs} = ${r.rhs}`).join("; ");
+      return { payload, kind: "system", reason: "system_extracted" };
+    }
+
+    // Single inequality
+    if (ineqs.length >= 1) {
+      const r = ineqs[0];
+      return { payload: `${r.lhs} ${r.op} ${r.rhs}`, kind: "inequality", reason: "inequality_extracted" };
+    }
+
+    // Single equation
+    if (eqs.length === 1) {
+      const r = eqs[0];
+      return { payload: `${r.lhs} = ${r.rhs}`, kind: "equation", reason: "equation_extracted" };
+    }
+  }
+
+  // 2) No relation: try to extract a pure expression for numeric validation
+  let t = stripLeadVerbs(cleaned);
+  // Take last mathy chunk (functions, numbers, parentheses, operators)
+  const exprMatch = t.match(/([a-zA-Z]+\s*\([^)]*\)|[0-9a-zA-Z\(\)\s^*+\-\/\\.,]+)$/);
+  if (exprMatch) t = exprMatch[1].trim();
+  t = t.replace(/[,:\s]+$/g, "").trim();
+
+  if (/[0-9a-zA-Z\(\)]/.test(t)) {
+    return { payload: t, kind: "expression", reason: "expression_extracted" };
+  }
+
+  return { payload: original, kind: "unknown", reason: "no_math_found" };
 }
 
 
@@ -1547,9 +1560,11 @@ function runValidationTests() {
 
 if (process.env.RUN_VALIDATION_TESTS === "true") {
   runValidationTests();
+  process.exit(0);
 }
 app.listen(PORT, () => {
-  console.log(`Server is listening on http://localhost:${PORT}`);
+  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Build version: ${BUILD_VERSION}`);
 });
 
 
