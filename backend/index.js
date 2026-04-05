@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const OpenAI = require('openai');
 const { create, all } = require('mathjs');
+const { buildProblemArtifact } = require('./artifact');
 
 const BUILD_VERSION = "v1.0.0-validation-checkpoint";
 
@@ -1286,6 +1287,108 @@ function extractMathPayload(question) {
   return { payload: original, kind: "unknown", reason: "no_math_found" };
 }
 
+function extractJsonObject(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  // First try direct parse
+  try {
+    return JSON.parse(raw);
+  } catch (_) {}
+
+  // Remove ```json ... ``` fences if present
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) {
+    try {
+      return JSON.parse(fenced[1].trim());
+    } catch (_) {}
+  }
+
+  // Fallback: find the first {...} block
+  const firstBrace = raw.indexOf('{');
+  const lastBrace = raw.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    const candidate = raw.slice(firstBrace, lastBrace + 1);
+    try {
+      return JSON.parse(candidate);
+    } catch (_) {}
+  }
+
+  return null;
+}
+
+function normalizeStructuredSolution(parsed) {
+  const safe = parsed && typeof parsed === 'object' ? parsed : {};
+
+  const finalAnswerLatex =
+    typeof safe.final_answer_latex === 'string'
+      ? safe.final_answer_latex.trim()
+      : '';
+
+  const overview =
+    typeof safe.overview === 'string'
+      ? safe.overview.trim()
+      : '';
+
+  const sections = Array.isArray(safe.sections)
+    ? safe.sections
+        .map((section) => ({
+          title:
+            typeof section?.title === 'string' && section.title.trim()
+              ? section.title.trim()
+              : 'Explanation',
+          summary_latex:
+            typeof section?.summary_latex === 'string'
+              ? section.summary_latex.trim()
+              : '',
+          explanation:
+            typeof section?.explanation === 'string'
+              ? section.explanation.trim()
+              : '',
+        }))
+        .filter(
+          (section) =>
+            section.title || section.summary_latex || section.explanation
+        )
+    : [];
+
+  return {
+    final_answer_latex: finalAnswerLatex,
+    overview,
+    sections,
+  };
+}
+
+function buildLegacyAnswerFromStructuredSolution(solution) {
+  const lines = [];
+
+  if (solution.overview) {
+    lines.push(solution.overview);
+    lines.push('');
+  }
+
+  for (const section of solution.sections) {
+    if (section.title) {
+      lines.push(section.title);
+    }
+
+    if (section.summary_latex) {
+      lines.push(`$$${section.summary_latex}$$`);
+    }
+
+    if (section.explanation) {
+      lines.push(section.explanation);
+    }
+
+    lines.push('');
+  }
+
+  if (solution.final_answer_latex) {
+    lines.push(`$$${solution.final_answer_latex}$$`);
+  }
+
+  return lines.join('\n').trim();
+}
 
 app.post('/solve', async (req, res) => {
   const { question, detailLevel, mode } = req.body;
@@ -1299,89 +1402,50 @@ app.post('/solve', async (req, res) => {
   let systemPrompt;
   let temperature;
 
-  if (safeMode === 'math') {
-    // ---------- MATH MODE PROMPTS ----------
-    switch (detailLevel) {
-      case 'simple':
-        systemPrompt = `
-You are an engineering mathematics professor (algebra and calculus) who explains extremely concisely.
+    if (safeMode === 'math') {
+  systemPrompt = `
+    You are an engineering mathematics tutor.
 
-You MUST follow this exact structure, but WITHOUT any headings, labels, markdown, or bullet points.
+    Solve the user's problem and return STRICT JSON only.
 
-STRUCTURE:
-1. First line: Rewrite the problem in one short sentence. No label.
-2. Second line: State the main approach in ONE sentence (e.g. "Rewrite as a quadratic and solve using the quadratic formula.").
-3. Then give 2–4 numbered steps only. Each step MUST:
-   - start with "Step 1:", "Step 2:", etc. (no bullets, no dashes)
-   - include a short explanation
-   - put the key equation on its own line in LaTeX using $$...$$.
-4. Final line: ONLY the final solution in LaTeX as a single standalone equation.
-   - No leading text. No "Answer:", "Final Answer:", or anything else.
+    Do not return markdown.
+    Do not return headings outside the JSON.
+    Do not return numbered steps.
+    Do not wrap the JSON in code fences.
 
-HARD RULES:
-- Do NOT use markdown: no **bold**, no *, no bullet lists, no "Section".
-- Do NOT write headings like "Problem Restatement", "Approach", "Solution".
-- The answer MUST look like plain text with numbered steps and LaTeX equations only.
-- All equations MUST be written in LaTeX.
-- Use $$...$$ for standalone equations and $...$ only when necessary inline.
-- Tone: fast, sharp, precise, minimal.
-`;
-        temperature = 0.2;
-        break;
+    Use this exact JSON shape:
 
-      case 'detailed':
-        systemPrompt = `
-You are an engineering mathematics professor (algebra and calculus) known for clear, rigorous explanations.
-
-You MUST follow this structure, WITHOUT headings, markdown, or bullet lists.
-
-FORMAT:
-1. First line: Rewrite the problem in one clear sentence in your own words. No label.
-2. Second line: One or two sentences describing the overall mathematical strategy. No label.
-3. Next lines: Numbered steps, starting strictly with "Step 1:", "Step 2:", etc.
-   - Each step has a short explanation.
-   - Put important equations on their own line in LaTeX using $$...$$.
-4. Final line: ONLY the final result, written as a standalone LaTeX equation (or equations), for example:
-   $$x = \\frac{5 \\pm i\\sqrt{431}}{76}$$
-   Do NOT prefix it with any words.
-
-ABSOLUTE RULES:
-- Do NOT output the words "Solution" or "Section".
-- Do NOT use markdown (no **bold**, no lists).
-- Do NOT use headings or labels like "Problem Summary", "Step-by-Step Algebra", etc.
-- The only allowed numbered items are "Step 1:", "Step 2:", etc.
-- All mathematical expressions MUST be in LaTeX.
-- Use $$...$$ for block equations and $...$ for inline math when needed.
-- Tone: professional, concise, professor-level; no fluff.
-`;
-        temperature = 0.35;
-        break;
-
-      default:
-        systemPrompt = `
-You are a university-level engineering mathematics professor (algebra and calculus) who explains clearly and efficiently.
-
-Follow this structure, WITHOUT any visible labels, headings, markdown, or bullet lists:
-
-STRUCTURE:
-1. First line: Restate the problem in one concise sentence. No label.
-2. Second line: Describe the conceptual approach in 1–2 sentences. No label.
-3. Then provide a numbered sequence of steps, strictly using "Step 1:", "Step 2:", etc.
-   - Each step contains a brief explanation.
-   - Put key algebraic or calculus expressions on their own line in LaTeX using $$...$$.
-4. Final line: ONLY the final result as a standalone LaTeX equation with no extra words.
-
-RULES:
-- Do NOT use markdown (**bold**, *, lists) or headings of any kind.
-- Do NOT write "Solution", "Problem:", "Approach:", etc.
-- The structure must be implicit: just sentences, numbered steps, and equations.
-- All math MUST be in LaTeX.
-- Use $$...$$ for block equations and $...$ for inline expressions.
-- Tone: clear, efficient, and professional.
-`;
-        temperature = 0.3;
-        break;
+    {
+      "final_answer_latex": "string",
+      "overview": "string",
+      "sections": [
+        {
+          "title": "string",
+          "summary_latex": "string",
+          "explanation": "string"
+        }
+      ]
     }
+
+    Rules:
+    - final_answer_latex must contain only the final mathematical answer in LaTeX, without $$.
+    - overview must be 1-2 natural sentences.
+    - sections must contain 2 to 5 logical sections depending on complexity.
+    - Do NOT over-fragment simple problems.
+    - Use natural educational section titles such as:
+      "Set up the equation",
+      "Simplify the expression",
+      "Solve for the variable",
+      "Check the result",
+      "Apply substitution",
+      "Evaluate the expression".
+    - summary_latex must contain only LaTeX math, without $$.
+    - explanation must be concise, natural, and clear.
+    - All mathematical notation must be valid LaTeX.
+    - Never include the words "Step 1", "Step 2", or numbered lists.
+    - Keep the explanation structured and readable.
+    `;
+    temperature = 0.2;
   } else {
     // ---------- PHYSICS MODE PROMPTS ----------
     switch (detailLevel) {
@@ -1456,43 +1520,105 @@ RULES:
   }
 
   try {
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4.1-mini',
-      messages: [
-        {
-          role: 'system',
-          content: systemPrompt,
-        },
-        {
-          role: 'user',
-          content: `Solve this ${safeMode} problem and explain according to your rules:\n\n${question}`,
-        },
-      ],
-      temperature,
-    });
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-4.1-mini',
+    messages: [
+      {
+        role: 'system',
+        content: systemPrompt,
+      },
+      {
+        role: 'user',
+        content: `Solve this ${safeMode} problem and explain according to your rules:\n\n${question}`,
+      },
+    ],
+    temperature: temperature,
+  });
 
-    const answer = completion.choices[0].message.content || '';
+  const rawModelOutput = completion.choices[0].message.content || '';
 
-    const { payload: mathPayload } = extractMathPayload(question);
-    let verification;
+  let structuredSolution = {
+    final_answer_latex: '',
+    overview: '',
+    sections: [],
+  };
 
-    if (safeMode === "math") {
-      verification = verifyMathAnswer(mathPayload, answer);
-    } else {
-      verification = { status: "unavailable", reason: "physics_not_supported" };
+  let answer = rawModelOutput;
+
+  if (safeMode === 'math') {
+    try {
+      const parsed = extractJsonObject(rawModelOutput);
+      const normalizedSolution = normalizeStructuredSolution(parsed);
+
+      if (
+        normalizedSolution &&
+        normalizedSolution.final_answer_latex &&
+        Array.isArray(normalizedSolution.sections) &&
+        normalizedSolution.sections.length > 0
+      ) {
+        structuredSolution = normalizedSolution;
+        answer = buildLegacyAnswerFromStructuredSolution(structuredSolution);
+      }
+    } catch (parseErr) {
+      console.warn('Structured parsing failed:', parseErr.message);
     }
-
-    res.json({
-      answer,
-      verificationStatus: verification.status,
-      verificationDetails: verification.details || verification.meta || null,
-      verificationReason: verification.reason || null,
-      extractedMathPayload: mathPayload,
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Something went wrong with the AI' });
   }
+
+  const normalized = extractMathPayload(question);
+  const mathPayload = normalized.payload;
+
+  let verification;
+
+  if (safeMode === 'math') {
+    try {
+      verification = verifyMathAnswer(mathPayload, answer);
+    } catch (verifyErr) {
+      verification = {
+        status: 'unavailable',
+        reason: 'verification_error',
+      };
+    }
+  } else {
+    verification = {
+      status: 'unavailable',
+      reason: 'physics_not_supported',
+    };
+  }
+
+  const artifact = buildProblemArtifact({
+  question,
+  mode: safeMode,
+  detailLevel,
+  buildVersion: BUILD_VERSION,
+  normalized,
+  answer,
+  structuredSolution,
+  verification,
+  llmCalls: 1,
+});
+
+  res.json({
+    answer,
+    verificationStatus: verification.status,
+    verificationDetails: verification.details || verification.meta || null,
+    verificationReason: verification.reason || null,
+    extractedMathPayload: mathPayload,
+    structuredSolution,
+    artifact,
+  });
+} catch (err) {
+  console.error('Solve error:', err);
+
+  res.status(500).json({
+    answer: '',
+    verificationStatus: 'unavailable',
+    verificationDetails: null,
+    verificationReason: 'internal_error',
+    extractedMathPayload: null,
+    structuredSolution: null,
+    artifact: null,
+  });
+}
 });
 
 function runValidationTests() {
@@ -1566,7 +1692,6 @@ app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Build version: ${BUILD_VERSION}`);
 });
-
 
 
 
