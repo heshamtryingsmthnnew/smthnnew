@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/hesha/**)",
+      "Bash(ls c:/Users/hesha/Documents/my-ai-app/backend/*.js c:/Users/hesha/Documents/my-ai-app/backend/*.json c:/Users/hesha/Documents/my-ai-app/backend/.env)",
+      "Bash(npm install:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(RUN_VALIDATION_TESTS=true node index.js)",
+      "Bash(node index.js)",
+      "Bash(curl -s -X POST http://localhost:5000/solve -H \"Content-Type: application/json\" -d \"{\\\\\"question\\\\\":\\\\\"factor x^2+5x-8=37\\\\\",\\\\\"mode\\\\\":\\\\\"math\\\\\"}\")",
+      "Bash(jobs -l)",
+      "Bash(node -e ':*)",
+      "Bash(npx tsc:*)",
+      "Bash(node_modules/.bin/tsc --noEmit)"
+    ]
+  }
+}

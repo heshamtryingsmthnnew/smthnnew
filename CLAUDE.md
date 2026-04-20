@@ -1,0 +1,313 @@
+# CLAUDE.md — Ergo: Persistent Project Context
+
+This file is loaded automatically by Claude Code on every session.
+It encodes the full product philosophy, architecture, locked decisions, current code state,
+implementation priorities, business model, and all pivots made during development.
+Do not drift from these principles without explicit founder approval.
+
+---
+
+## 1. What This Product Is
+
+**Ergo.** is an AI-powered math and physics solver.
+The period in "Ergo." is intentional and must always be present.
+
+It is **NOT**:
+- A chat UI or ChatGPT wrapper
+- A homework solver or study app
+- A split-panel dashboard
+- An "engineering only" tool (this was an earlier positioning, now abandoned)
+
+It **IS**:
+- A trust-first, accuracy-first solver for anyone who needs a correct answer they can rely on
+- A product whose core differentiator is **visible correctness / visible validation / legible trust**
+- A focused solving surface: type problem → see answer → trust state visible immediately → follow the work → inspect deeper only if needed
+- Broad audience: engineers, grad students, researchers, advanced students, professionals — anyone who has been burned by a confident wrong AI answer
+
+The product should feel **engineered, minimal, precise, trustworthy without noise, powerful without clutter.**
+It should feel like an environment, not a webpage.
+
+---
+
+## 2. Product Name & Brand
+
+**Name:** Ergo.
+**Slogan:** The answer, and the proof.
+**Why Ergo:** "Ergo" means "therefore" — the word at the conclusion of every proof. The period signals finality. The answer is delivered and the case is closed.
+
+### Font system (locked)
+- **DM Serif Display** — ONLY for the `Ergo.` wordmark and the slogan "The answer, and the proof." in the empty state. Nothing else.
+- **Geist Sans** — all UI: body, labels, buttons, badges, input, placeholders, section titles, nav, everything else
+- **JetBrains Mono** — ONLY for verification proof detail values: residuals, evaluated values, method labels, numeric proof metadata
+- KaTeX handles equation rendering fonts independently — do not touch
+
+### Color system (locked)
+Monochrome cool. Zero blue anywhere except functional badge colors.
+```
+Page background:     bg-zinc-950
+Surfaces/cards:      bg-white/[0.04] to bg-white/[0.06]
+Borders/dividers:    border-white/[0.06] to border-white/[0.10]
+Primary text:        text-white
+Secondary text:      text-zinc-400
+Meta text:           text-zinc-500
+Placeholder:         text-zinc-600
+Primary button:      bg-white text-zinc-950 hover:bg-zinc-100
+Secondary buttons:   bg-white/[0.08] text-zinc-200 border border-white/[0.10]
+```
+
+Verification badge colors — functional signals, never change:
+```
+Verified:            border-emerald-500/30 bg-emerald-500/10 text-emerald-300
+Checked:             border-white/20 bg-white/[0.06] text-zinc-300
+Discrepancy:         border-amber-500/30 bg-amber-500/10 text-amber-300
+Not verified:        border-white/10 bg-white/[0.04] text-zinc-400
+```
+
+---
+
+## 3. Core Product Philosophy (Locked)
+
+- **Trust must be visible.** Verification state and one-line proof summary always shown without any click
+- **Depth is optional.** Proof details, concept explanations, graph, advanced verification are on-demand only
+- **One place per idea.** No duplication of controls, no repeated text, no competing focal areas
+- **Task completion first, learning second.** Procedural solve flow always fully visible. Conceptual explanations behind optional expansion
+- **Minimalism ≠ hiding everything.** It means no wasted elements and no friction
+- **The interface should feel like an environment, not a webpage.** Every element earns its place
+
+### Always Visible (No Click Required)
+- Input, Final answer, Verification badge, One-line verification summary (user_reason), Overview, Procedural solution sections
+
+### On-Demand Only
+- Proof details (drawer), "Why this works" toggle, Graph (modal), Advanced verification, Suggestions (failure states only)
+
+---
+
+## 4. Product Direction Pivots (Important History)
+
+### Pivot 1: "Engineering only" → Broad accuracy-first positioning
+Originally "Engineering Solver" for engineers specifically.
+**Changed:** Target is now anyone needing a correct verifiable answer.
+The engineering-grade standard (accuracy, verification, no hand-holding) is kept.
+The exclusive "engineers only" label is dropped.
+Reason: it was a distribution constraint, not a product advantage.
+
+### Pivot 2: Right rail removed
+Had a persistent right rail with graph and verification panels.
+**Changed:** Removed entirely. Action cluster under answer + overlays on demand.
+Reason: linear interaction model, rail split attention and duplicated controls.
+
+### Pivot 3: Name change
+"Engineering Solver" → **Ergo.**
+Reason: generic name limited perceived audience. Ergo. signals rigor and finality.
+
+### Pivot 4: Study mode → Interactive mode
+**Changed:** "Study mode" reframed as **Interactive mode**.
+Reason: "study" carried student/homework connotations.
+Interactive mode is a persistent user preference (never resets between solves).
+Will eventually enable conversational, concept-driven interaction.
+Currently UI-scaffolded only — full behavior is a future phase.
+
+### Pivot 5: Separate normalization call → Embedded in solution call
+Originally planned as a separate Haiku API call for Tier 2 normalization.
+**Changed:** Normalization is embedded in the solution generation prompt.
+The same Sonnet call returns a `normalized_expression` field alongside the solution.
+Reason: zero extra cost, zero extra latency, simpler architecture.
+
+### Pivot 6: OpenAI → Anthropic (Claude)
+Currently on OpenAI for solution generation.
+**Changing in Phase 2a:** Migrate entirely to Anthropic.
+- Solution generation: claude-sonnet-4-5
+- No separate normalization model needed (embedded)
+- CAS/advanced verification: claude-sonnet-4-5
+Reason: single provider, cleaner codebase, Claude is more instruction-following for structured JSON.
+
+---
+
+## 5. Layout Blueprint (Implemented)
+
+### Header
+- Left: `Ergo.` in DM Serif Display
+- Right: profile avatar circle + plain three-line menu icon (no circle on menu)
+- `bg-zinc-950` solid — dot pattern does not show through
+- `border-b border-white/[0.06]`
+- NO subtitle, NO mode toggles, NO history in header
+
+### Empty State
+- Dot pattern background: fades around input center, disappears on solve
+- Slogan centered at ~42% viewport, DM Serif Display, text-2xl, text-zinc-300
+- Input composer centered at ~62% viewport, ~680–700px wide, compact height
+- Nothing else
+
+### Input Composer
+- **Idle:** centered, ~680–700px wide, ~62% viewport
+- **Active:** bottom-anchored, full content width, 380ms ease-out
+- Triggers active on `loading || !!artifact`
+- Floating, no outer panel/border
+- Math/Physics tabs: left, flush with input box left edge
+- Interactive bookmark tab: right, partially overlaps top edge of input, behind input (z-index) when inactive, lifts forward when active, dot indicator (dim → white)
+- Enter submits, Shift+Enter newline
+- Image upload icon (visual only, backend future)
+- Σ math keyboard, Solve → button
+
+### Workspace Controls
+- History icon: top-left of workspace, quiet, placeholder
+- Interactive mode: bookmark tab on input composer
+
+### Solve Surface
+- Final Answer: `bg-white/[0.04] border border-white/[0.08]`, no glow
+- Badge + user_reason: always visible
+- Action cluster: `Proof details` | `Advanced verification` | `View graph`
+- FlowDividers between sections
+- Overview, Solution sections (always visible), "Why this works" toggle
+
+---
+
+## 6. Validation Architecture (Locked)
+
+### Tier 1 — Deterministic (Default)
+math.js: equations, systems, inequalities, numeric expressions. Free, instant.
+
+### Tier 2 — Normalization (Embedded, Zero Extra Cost)
+NOT a separate API call. The solution generation call also returns `normalized_expression`.
+Stored in artifact, used for deterministic validation retry if raw input fails parsing.
+
+### Tier 3 — CAS / Advanced Verification (User-Invoked, Paid)
+Triggered by "Advanced verification" button. Gated behind Pro tier.
+
+### Hard Rule
+NO "AI checks AI" for correctness. Deterministic is always the correctness authority.
+
+---
+
+## 7. AI Model Architecture (Locked)
+
+- **Solution generation:** `claude-sonnet-4-5`
+- **Normalization:** embedded in solution call — no separate model
+- **CAS future:** `claude-sonnet-4-5`
+- **OpenAI:** being removed in Phase 2a, zero OpenAI references after that
+
+---
+
+## 8. Business Model
+
+### Tiers
+- **Free:** 15 queries/day, no CAS, no advanced verification
+- **Pro:** $12/month — unlimited, CAS, advanced verification, history
+
+### Unit Economics
+- Cost per query: ~$0.004–0.005 (one Sonnet call, normalization embedded)
+- Free user monthly cost: ~$1.00
+- Pro user monthly cost: ~$3.75
+- Gross margin per Pro user: ~$8.25 (~69%)
+- Fixed costs: ~$50/month (hosting)
+
+### Targets
+| Pro Users | Net/Month |
+|---|---|
+| 20 | +$115 |
+| 100 | +$775 |
+| 300 | +$2,425 |
+
+$2,000+/month net requires ~250–300 paying Pro users.
+At 4% free-to-paid conversion: need ~7,500 active free users.
+
+### Growth strategy
+- SEO: many targeted solver pages (one per problem type), not one generic page
+- Funnel: SEO → free use → query limit or CAS gate → Pro conversion
+- Free tier is the discovery and conversion engine
+
+---
+
+## 9. Implementation Phases
+
+### ✅ Completed
+- Phase 1: Right rail removal, action cluster, header cleanup
+- Phase 1b: Full-width layout, empty state, floating input, slogan
+- Phase 1c: Ergo. rename, font system, zinc colors, animated input, dot pattern,
+            Interactive mode tab, header restructure (identity + account only),
+            header solid background over dots, header micro-fixes (menu icon, tab alignment)
+
+### 🔲 Phase 2a — OpenAI → Claude + Normalization Embedding (NEXT)
+1. Replace OpenAI SDK with Anthropic SDK (`@anthropic-ai/sdk`)
+2. Rewrite solution generation prompt for Claude Sonnet 4-5
+3. Add `normalized_expression` to structured output schema
+4. Store and use `normalized_expression` for deterministic validation retry
+5. Verify output quality: `final_answer_latex`, `overview`, `sections` all maintained
+6. Update `cost_meta` to reflect claude model
+7. Remove all OpenAI references from codebase
+
+### 🔲 Phase 2b — Suggestion Wiring
+Wire suggestion buttons to real actions:
+- `OPEN_MATH_KEYBOARD` → open keyboard UI
+- `RUN_ADVANCED_VERIFICATION` → trigger deeper solve
+- `SHOW_FORMAT_EXAMPLE` → show formatting helper
+
+### 🔲 Phase 2c — Concept Text Fix
+Replace `getConceptText()` keyword matching with real LLM-generated concept text.
+Either embed per-section concept explanation in structured solution response,
+or remove "Why this works" button until real content exists.
+
+### 🔲 Phase 3 — Graph
+Desmos API, auto-detect graphable problems, graph as modal/overlay only.
+
+### 🔲 Phase 4 — Deployment
+Vercel (frontend) + Railway/Render (backend), domain, meta/OG tags, env-var API URL.
+
+### 🔲 Phase 5 — Auth & Monetization
+Accounts, free tier limiting, Pro gating, Stripe.
+
+### 🔲 Phase 6 — Interactive Mode (Full)
+Conversational follow-up on solved problems, concept exploration, related examples.
+
+### 🔲 Phase 7 — Analytics
+Verification tier tracking, failure reasons, suggestion usage, conversion funnel, cost-per-solve.
+
+---
+
+## 10. Current Code State
+
+### Backend (`/backend`)
+- Express + OpenAI (BEING REPLACED in Phase 2a)
+- `/solve`: working
+- Validation engine: solid (equation substitution, system checks, inequality, numeric, MVP fallbacks)
+- `artifact.js`: badge, certainty, reason_code, user_reason, suggestions
+- Tier 2 normalization: not yet implemented (Phase 2a embeds in solution call)
+
+### Frontend (`/frontend/src/app/page.tsx`)
+- Next.js + Tailwind + KaTeX
+- Geist Sans base, DM Serif Display for wordmark + slogan, JetBrains Mono for proof values
+- Zinc monochrome color system (no blue except badges)
+- Animated input (idle centered → active bottom, 380ms ease-out)
+- Dot pattern background (empty state, fades on solve)
+- Interactive mode bookmark tab (state persists across solves, UI only)
+- Header: Ergo. + profile + plain-lines menu
+- History: workspace top-left placeholder
+- Right rail: removed
+- Suggestion buttons: rendered, not wired (Phase 2b)
+- `getConceptText()`: keyword placeholder (Phase 2c)
+- Graph: placeholder (Phase 3)
+
+---
+
+## 11. What Claude Code Should Never Do
+
+- Re-introduce a permanent right rail
+- Collapse or hide procedural solve sections
+- Use "Step 1 / Step 2 / Step 3" structure
+- Create "AI checks AI" correctness architecture
+- Make a separate API call for normalization (it's embedded in the solution call)
+- Add generic suggestion chips not tied to failure reason
+- Duplicate controls in multiple places
+- Add verbose copy to the header
+- Make the graph panel persistent layout
+- Guess at code structure — always read the actual file first
+- Reintroduce any blue colors (except emerald/amber functional badges)
+- Use Inter or any font other than Geist Sans for UI text
+- Reset `interactiveMode` state on new solves — it persists
+- Use OpenAI after Phase 2a is complete
+
+---
+
+## 12. One-Paragraph Product Summary
+
+Ergo. is a trust-first math and physics solver whose differentiator is visible correctness, not just AI output. It serves anyone who needs a correct, verifiable answer — engineers, researchers, advanced students, professionals. The solve experience is a single vertical flow: input → answer → visible verification state → overview → visible procedural sections → optional depth on demand. Radically minimal: no rail, no duplicated controls, no chat feel, no collapsed steps. Deterministic validation (math.js) is the backbone. Normalization is embedded in the solution call at zero extra cost. CAS is gated behind the paid tier ($12/month Pro). The interface feels like an environment — dark, precise, monochrome zinc, DM Serif Display for identity, Geist Sans for everything functional. The business target is 250–300 Pro users for $2,000+/month net, driven by SEO and a free tier conversion funnel.

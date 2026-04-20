@@ -365,6 +365,7 @@ function buildProblemArtifact({
   structuredSolution,
   verification,
   llmCalls = 1,
+  normalizedUsed = false,
 }) {
   const badge = mapVerificationToBadge(
   verification,
@@ -408,6 +409,7 @@ const certainty = mapVerificationToCertainty(
             title: section.title || "Explanation",
             summary_latex: section.summary_latex || "",
             explanation: section.explanation || "",
+            concept: section.concept || "",
           })),
         }
       : {
@@ -463,6 +465,8 @@ const certainty = mapVerificationToCertainty(
 
     cost_meta: {
       llm_calls: llmCalls,
+      model: 'claude-sonnet-4-5',
+      normalized_used: normalizedUsed,
       advanced_verification_used: false,
       cas_used: false,
     },

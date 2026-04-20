@@ -1,11 +1,11 @@
-require("dotenv").config(); 
+require("dotenv").config();
 const express = require('express');
 const cors = require('cors');
-const OpenAI = require('openai');
+const Anthropic = require('@anthropic-ai/sdk');
 const { create, all } = require('mathjs');
 const { buildProblemArtifact } = require('./artifact');
 
-const BUILD_VERSION = "v1.0.0-validation-checkpoint";
+const BUILD_VERSION = "v2.0.0-claude-migration";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -13,15 +13,13 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Math.js instance (for future verification)
+// Math.js instance
 const math = create(all);
 
-// OpenAI client
-const openai = process.env.RUN_VALIDATION_TESTS === "true"
+// Anthropic client
+const client = process.env.RUN_VALIDATION_TESTS === "true"
   ? null
-  : new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+  : new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // Simple health check
 app.get('/', (req, res) => {
@@ -1403,48 +1401,9 @@ app.post('/solve', async (req, res) => {
   let temperature;
 
     if (safeMode === 'math') {
-  systemPrompt = `
-    You are an engineering mathematics tutor.
-
-    Solve the user's problem and return STRICT JSON only.
-
-    Do not return markdown.
-    Do not return headings outside the JSON.
-    Do not return numbered steps.
-    Do not wrap the JSON in code fences.
-
-    Use this exact JSON shape:
-
-    {
-      "final_answer_latex": "string",
-      "overview": "string",
-      "sections": [
-        {
-          "title": "string",
-          "summary_latex": "string",
-          "explanation": "string"
-        }
-      ]
-    }
-
-    Rules:
-    - final_answer_latex must contain only the final mathematical answer in LaTeX, without $$.
-    - overview must be 1-2 natural sentences.
-    - sections must contain 2 to 5 logical sections depending on complexity.
-    - Do NOT over-fragment simple problems.
-    - Use natural educational section titles such as:
-      "Set up the equation",
-      "Simplify the expression",
-      "Solve for the variable",
-      "Check the result",
-      "Apply substitution",
-      "Evaluate the expression".
-    - summary_latex must contain only LaTeX math, without $$.
-    - explanation must be concise, natural, and clear.
-    - All mathematical notation must be valid LaTeX.
-    - Never include the words "Step 1", "Step 2", or numbered lists.
-    - Keep the explanation structured and readable.
-    `;
+  systemPrompt = `You are a precise math and physics solver. You solve problems accurately and return structured JSON only.
+Never include markdown, code fences, or explanation outside the JSON structure.
+Return valid JSON that exactly matches the schema provided.`;
     temperature = 0.2;
   } else {
     // ---------- PHYSICS MODE PROMPTS ----------
@@ -1520,105 +1479,153 @@ RULES:
   }
 
   try {
-  const completion = await openai.chat.completions.create({
-    model: 'gpt-4.1-mini',
-    messages: [
-      {
-        role: 'system',
-        content: systemPrompt,
-      },
-      {
-        role: 'user',
-        content: `Solve this ${safeMode} problem and explain according to your rules:\n\n${question}`,
-      },
-    ],
-    temperature: temperature,
-  });
+    let rawModelOutput = '';
+    let structuredSolution = { final_answer_latex: '', overview: '', sections: [] };
+    let answer = '';
+    let normalizedExpression = null;
 
-  const rawModelOutput = completion.choices[0].message.content || '';
-
-  let structuredSolution = {
-    final_answer_latex: '',
-    overview: '',
-    sections: [],
-  };
-
-  let answer = rawModelOutput;
-
-  if (safeMode === 'math') {
-    try {
-      const parsed = extractJsonObject(rawModelOutput);
-      const normalizedSolution = normalizeStructuredSolution(parsed);
-
-      if (
-        normalizedSolution &&
-        normalizedSolution.final_answer_latex &&
-        Array.isArray(normalizedSolution.sections) &&
-        normalizedSolution.sections.length > 0
-      ) {
-        structuredSolution = normalizedSolution;
-        answer = buildLegacyAnswerFromStructuredSolution(structuredSolution);
-      }
-    } catch (parseErr) {
-      console.warn('Structured parsing failed:', parseErr.message);
+    if (safeMode === 'math') {
+      const userPrompt = `Solve the following problem and return a JSON object with this exact structure:
+{
+  "final_answer_latex": "final answer in LaTeX notation",
+  "normalized_expression": "clean math expression from the problem, no prose, standard notation",
+  "overview": "1-2 sentence problem overview",
+  "sections": [
+    {
+      "title": "descriptive title (not Step 1/2/3)",
+      "summary_latex": "key equation for this step in LaTeX",
+      "explanation": "what this step does and why",
+      "concept": "underlying mathematical principle, 1-2 sentences"
     }
-  }
-
-  const normalized = extractMathPayload(question);
-  const mathPayload = normalized.payload;
-
-  let verification;
-
-  if (safeMode === 'math') {
-    try {
-      verification = verifyMathAnswer(mathPayload, answer);
-    } catch (verifyErr) {
-      verification = {
-        status: 'unavailable',
-        reason: 'verification_error',
-      };
-    }
-  } else {
-    verification = {
-      status: 'unavailable',
-      reason: 'physics_not_supported',
-    };
-  }
-
-  const artifact = buildProblemArtifact({
-  question,
-  mode: safeMode,
-  detailLevel,
-  buildVersion: BUILD_VERSION,
-  normalized,
-  answer,
-  structuredSolution,
-  verification,
-  llmCalls: 1,
-});
-
-  res.json({
-    answer,
-    verificationStatus: verification.status,
-    verificationDetails: verification.details || verification.meta || null,
-    verificationReason: verification.reason || null,
-    extractedMathPayload: mathPayload,
-    structuredSolution,
-    artifact,
-  });
-} catch (err) {
-  console.error('Solve error:', err);
-
-  res.status(500).json({
-    answer: '',
-    verificationStatus: 'unavailable',
-    verificationDetails: null,
-    verificationReason: 'internal_error',
-    extractedMathPayload: null,
-    structuredSolution: null,
-    artifact: null,
-  });
+  ]
 }
+
+Problem: ${question}
+Mode: ${safeMode}`;
+
+      const message = await client.messages.create({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 2048,
+        temperature,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }],
+      });
+
+      rawModelOutput = message.content[0].text || '';
+
+      console.log('\n=== CLAUDE RAW RESPONSE ===');
+      console.log(rawModelOutput);
+      console.log('=== END RAW RESPONSE ===\n');
+
+      try {
+        const parsed = extractJsonObject(rawModelOutput);
+        normalizedExpression = (parsed && typeof parsed.normalized_expression === 'string')
+          ? parsed.normalized_expression.trim()
+          : null;
+
+        const normalizedSolution = normalizeStructuredSolution(parsed);
+        if (
+          normalizedSolution &&
+          normalizedSolution.final_answer_latex &&
+          Array.isArray(normalizedSolution.sections) &&
+          normalizedSolution.sections.length > 0
+        ) {
+          // Preserve concept field per section
+          normalizedSolution.sections = (Array.isArray(parsed.sections) ? parsed.sections : []).map((sec) => ({
+            title: typeof sec.title === 'string' ? sec.title.trim() : 'Explanation',
+            summary_latex: typeof sec.summary_latex === 'string' ? sec.summary_latex.trim() : '',
+            explanation: typeof sec.explanation === 'string' ? sec.explanation.trim() : '',
+            concept: typeof sec.concept === 'string' ? sec.concept.trim() : '',
+          })).filter(s => s.title || s.summary_latex || s.explanation);
+
+          structuredSolution = normalizedSolution;
+          answer = buildLegacyAnswerFromStructuredSolution(structuredSolution);
+          console.log('[PARSE] JSON parsing succeeded. normalized_expression:', normalizedExpression);
+        } else {
+          answer = rawModelOutput;
+          console.log('[PARSE] JSON parsed but missing required fields — fell back to legacy parsing.');
+        }
+      } catch (parseErr) {
+        console.warn('[PARSE] JSON parsing failed, fell back to legacy parsing. Error:', parseErr.message);
+        answer = rawModelOutput;
+      }
+    } else {
+      // Physics: use legacy prompt via Claude
+      const message = await client.messages.create({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 2048,
+        temperature,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: `Solve this ${safeMode} problem and explain according to your rules:\n\n${question}` }],
+      });
+      rawModelOutput = message.content[0].text || '';
+      answer = rawModelOutput;
+    }
+
+    const normalized = extractMathPayload(question);
+    const mathPayload = normalized.payload;
+
+    let verification;
+    let normalizedUsed = false;
+
+    if (safeMode === 'math') {
+      try {
+        verification = verifyMathAnswer(mathPayload, answer);
+
+        // Normalization retry: if raw input fails and we have a normalized_expression, retry with it
+        if (verification.status === 'unavailable' && normalizedExpression) {
+          const retryVerification = verifyMathAnswer(normalizedExpression, answer);
+          if (retryVerification.status !== 'unavailable') {
+            verification = retryVerification;
+            normalizedUsed = true;
+          }
+        }
+      } catch (verifyErr) {
+        verification = { status: 'unavailable', reason: 'verification_error' };
+      }
+    } else {
+      verification = { status: 'unavailable', reason: 'physics_not_supported' };
+    }
+
+    // Store normalized_expression in normalized payload
+    const normalizedForArtifact = {
+      ...normalized,
+      payload: normalizedExpression || normalized.payload,
+    };
+
+    const artifact = buildProblemArtifact({
+      question,
+      mode: safeMode,
+      buildVersion: BUILD_VERSION,
+      normalized: normalizedForArtifact,
+      answer,
+      structuredSolution,
+      verification,
+      llmCalls: 1,
+      normalizedUsed,
+    });
+
+    res.json({
+      answer,
+      verificationStatus: verification.status,
+      verificationDetails: verification.details || verification.meta || null,
+      verificationReason: verification.reason || null,
+      extractedMathPayload: mathPayload,
+      structuredSolution,
+      artifact,
+    });
+  } catch (err) {
+    console.error('Solve error:', err);
+    res.status(500).json({
+      answer: '',
+      verificationStatus: 'unavailable',
+      verificationDetails: null,
+      verificationReason: 'internal_error',
+      extractedMathPayload: null,
+      structuredSolution: null,
+      artifact: null,
+    });
+  }
 });
 
 function runValidationTests() {

@@ -1,12 +1,14 @@
 'use client';
 
-import 'katex/dist/katex.min.css';
 import { BlockMath } from 'react-katex';
 import axios from 'axios';
-import { useEffect, useState, FormEvent } from 'react';
+import { useEffect, useState, useRef, FormEvent, KeyboardEvent, ChangeEvent } from 'react';
+import { DM_Serif_Display, JetBrains_Mono } from 'next/font/google';
+
+const dmSerifDisplay = DM_Serif_Display({ subsets: ['latin'], weight: '400' });
+const jetbrainsMono = JetBrains_Mono({ subsets: ['latin'] });
 
 type Mode = 'math' | 'physics';
-type RailPanel = 'verification' | 'graph' | null;
 
 type Suggestion = {
   action: string;
@@ -34,6 +36,7 @@ type Artifact = {
       title: string;
       summary_latex: string;
       explanation: string;
+      concept: string;
     }[];
   };
   verification: {
@@ -92,12 +95,12 @@ function getBadgeClasses(badge: Artifact['verification']['badge']) {
     case 'verified':
       return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
     case 'checked':
-      return 'border-blue-500/30 bg-blue-500/10 text-blue-300';
+      return 'border-white/20 bg-white/[0.06] text-zinc-300';
     case 'discrepancy_detected':
       return 'border-amber-500/30 bg-amber-500/10 text-amber-300';
     case 'not_verified':
     default:
-      return 'border-white/10 bg-white/[0.04] text-slate-300';
+      return 'border-white/10 bg-white/[0.04] text-zinc-300';
   }
 }
 
@@ -119,7 +122,6 @@ function getCertaintyLabel(certainty: Artifact['verification']['certainty']) {
 
 function formatMethodLabel(method: string | null) {
   if (!method) return 'Verification';
-
   return method
     .replace(/-/g, ' ')
     .replace(/_/g, ' ')
@@ -134,11 +136,9 @@ function formatValue(value: unknown): string {
     }
     return Number(value.toFixed(6)).toString();
   }
-
   if (Array.isArray(value)) {
     return value.map(formatValue).join(', ');
   }
-
   if (typeof value === 'object' && value !== null) {
     try {
       return JSON.stringify(value);
@@ -146,49 +146,7 @@ function formatValue(value: unknown): string {
       return '[object]';
     }
   }
-
   return String(value);
-}
-
-function getVerificationPreview(artifact: Artifact | null) {
-  if (!artifact) return null;
-
-  const { verification } = artifact;
-  const meta = verification.meta || {};
-
-  if (verification.badge === 'verified') {
-    if (meta.type === 'equation-substitution') {
-      return 'Substitution check completed successfully.';
-    }
-
-    if (meta.type === 'system-substitution') {
-      const maxResidual = typeof meta.maxResidual === 'number' ? meta.maxResidual : null;
-      if (maxResidual !== null) {
-        return `System residual check passed (max residual ${formatValue(maxResidual)}).`;
-      }
-      return 'System substitution check passed.';
-    }
-
-    if (meta.type === 'inequality') {
-      return 'Inside/outside test points matched the claimed solution region.';
-    }
-
-    if (meta.type === 'system') {
-      return 'Reported values satisfy the equations numerically.';
-    }
-
-    return 'Checked independently against the original problem.';
-  }
-
-  if (verification.badge === 'checked') {
-    return 'The system inspected the problem, but strong verification was limited.';
-  }
-
-  if (verification.badge === 'discrepancy_detected') {
-    return 'The reported answer may conflict with the parsed problem.';
-  }
-
-  return 'Verification was unavailable for this input.';
 }
 
 function getVerificationDetails(artifact: Artifact | null) {
@@ -202,31 +160,24 @@ function getVerificationDetails(artifact: Artifact | null) {
   if (typeof meta.type === 'string') {
     entries.push({ label: 'Check type', value: formatMethodLabel(meta.type) });
   }
-
   if (typeof meta.maxResidual === 'number') {
     entries.push({ label: 'Max residual', value: formatValue(meta.maxResidual) });
   }
-
   if (Array.isArray(meta.residuals) && meta.residuals.length > 0) {
     entries.push({ label: 'Residuals', value: formatValue(meta.residuals) });
   }
-
   if (typeof meta.insideX === 'number') {
     entries.push({ label: 'Inside test point', value: formatValue(meta.insideX) });
   }
-
   if (typeof meta.outsideX === 'number') {
     entries.push({ label: 'Outside test point', value: formatValue(meta.outsideX) });
   }
-
   if (typeof meta.questionOp === 'string') {
     entries.push({ label: 'Problem operator', value: meta.questionOp });
   }
-
   if (typeof meta.answerOp === 'string') {
     entries.push({ label: 'Answer operator', value: meta.answerOp });
   }
-
   if (meta.scope) {
     entries.push({ label: 'Evaluated values', value: formatValue(meta.scope) });
   }
@@ -234,32 +185,6 @@ function getVerificationDetails(artifact: Artifact | null) {
   return entries;
 }
 
-function getConceptText(section: Artifact['solution']['sections'][number]) {
-  const title = section.title.toLowerCase();
-  const explanation = section.explanation.toLowerCase();
-
-  if (title.includes('isolate') || explanation.includes('isolate')) {
-    return 'Underlying principle: preserve equality by doing the same operation to both sides. General rule: if a = b, then a + c = b + c and a - c = b - c.';
-  }
-
-  if (title.includes('solve') || explanation.includes('divide')) {
-    return 'Underlying principle: once the variable term is isolated, invert the remaining operation. General rule: if ac = b and a ≠ 0, then c = b/a.';
-  }
-
-  if (title.includes('simplify') || explanation.includes('simplify')) {
-    return 'Underlying principle: rewrite the expression into an equivalent but cleaner form. Simplification does not change the value; it only changes representation.';
-  }
-
-  if (title.includes('check') || explanation.includes('substitute')) {
-    return 'Underlying principle: a candidate answer must satisfy the original problem when substituted back in. Verification tests consistency, not presentation.';
-  }
-
-  if (title.includes('set up') || explanation.includes('given equation')) {
-    return 'Underlying principle: translate the problem into a clear mathematical relationship before manipulating it. Good setup reduces downstream error.';
-  }
-
-  return 'Underlying principle: each section applies a valid transformation that keeps the problem mathematically consistent while moving closer to the final result.';
-}
 
 export default function Home() {
   const [mode, setMode] = useState<Mode>('math');
@@ -268,40 +193,46 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [openExplainIndex, setOpenExplainIndex] = useState<number | null>(null);
   const [studyMode, setStudyMode] = useState(false);
-  const [openRailPanel, setOpenRailPanel] = useState<RailPanel>(null);
+  const [showProofDetails, setShowProofDetails] = useState(false);
   const [exampleIndex, setExampleIndex] = useState(0);
+  const [attachedFile, setAttachedFile] = useState<File | null>(null);
+  const [interactiveMode, setInteractiveMode] = useState(false);
+  const [showFormatHint, setShowFormatHint] = useState(false);
+  const [mathKeyboardFlash, setMathKeyboardFlash] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const mathKeyboardRef = useRef<HTMLButtonElement>(null);
+  const composerRef = useRef<HTMLFormElement>(null);
 
   const examples = mode === 'math' ? MATH_EXAMPLES : PHYSICS_EXAMPLES;
-  const verificationPreview = getVerificationPreview(artifact);
   const verificationDetails = getVerificationDetails(artifact);
   const certaintyLabel = artifact ? getCertaintyLabel(artifact.verification.certainty) : null;
-      useEffect(() => {
-      setExampleIndex(0);
-    }, [mode]);
+  const isActive = loading || !!artifact;
 
-    useEffect(() => {
-      const interval = setInterval(() => {
-        setExampleIndex((i) => (i + 1) % examples.length);
-      }, 2500);
+  useEffect(() => {
+    setExampleIndex(0);
+  }, [mode]);
 
-      return () => clearInterval(interval);
-    }, [examples]);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setExampleIndex((i) => (i + 1) % examples.length);
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [examples]);
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
+  const doSolve = async () => {
+    if (loading || !question.trim()) return;
     setLoading(true);
     setArtifact(null);
     setOpenExplainIndex(null);
-    setOpenRailPanel(null);
+    setShowProofDetails(false);
 
     try {
       const res = await axios.post('http://localhost:5000/solve', {
         question,
         mode,
       });
-
-      const returnedArtifact: Artifact | null = res.data.artifact || null;
-      setArtifact(returnedArtifact);
+      setArtifact(res.data.artifact || null);
     } catch (err) {
       console.error(err);
       setArtifact(null);
@@ -310,361 +241,507 @@ export default function Home() {
     }
   };
 
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    doSolve();
+  };
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      doSolve();
+    }
+  };
+
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    setAttachedFile(file);
+    e.target.value = '';
+  };
+
+  const scrollToComposer = () => {
+    composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    setTimeout(() => textareaRef.current?.focus(), 400);
+  };
+
+  const handleSuggestion = (action: string) => {
+    switch (action) {
+      case 'OPEN_MATH_KEYBOARD':
+        scrollToComposer();
+        setMathKeyboardFlash(true);
+        setTimeout(() => setMathKeyboardFlash(false), 600);
+        break;
+      case 'SHOW_FORMAT_EXAMPLE':
+        setShowFormatHint(true);
+        scrollToComposer();
+        break;
+      case 'RUN_ADVANCED_VERIFICATION':
+        // Phase 6 — Tier 3 CAS endpoint not yet implemented
+        // Scroll to action cluster as a placeholder acknowledgement
+        composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        break;
+      case 'SIMPLIFY_WORDING':
+        scrollToComposer();
+        break;
+    }
+  };
+
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100">
-      <div className="mx-auto flex min-h-screen w-full max-w-[2200px] flex-col px-2 py-4 xl:px-3">
-        <header className="mb-5 flex items-start justify-between border-b border-white/10 pb-4">
-          <div>
-            <h1 className="text-3xl font-semibold tracking-tight">Engineering Solver</h1>
-            <p className="mt-1 text-sm text-slate-400">
-              Math & physics explanations, structured for engineers.
-            </p>
-            <p className="mt-2 text-xs text-slate-500">
-              AI-generated solutions, independently verified when possible.
-            </p>
-          </div>
+    <main className="min-h-screen bg-zinc-950 text-zinc-100">
+
+      {/* Slogan — fixed, visible in idle state only */}
+      <div
+        className={`pointer-events-none fixed left-1/2 z-10 -translate-x-1/2 -translate-y-1/2 text-center transition-opacity duration-[380ms] ease-out ${isActive ? 'opacity-0' : 'opacity-100'}`}
+        style={{ top: '42vh' }}
+      >
+        <p className={`${dmSerifDisplay.className} text-2xl text-zinc-300`}>
+          The answer, and the proof.
+        </p>
+      </div>
+
+      {/* Scrollable content — bottom padding clears fixed input bar */}
+      <div className="relative z-10 px-6 pt-4 pb-[220px]">
+
+        {/* Header */}
+        <header className="relative z-20 mb-6 flex items-center justify-between border-b border-white/[0.06] bg-zinc-950 pb-4">
+          <h1 className={`${dmSerifDisplay.className} text-3xl tracking-tight text-white`}>Ergo.</h1>
 
           <div className="flex items-center gap-2">
+            {/* Profile */}
             <button
               type="button"
-              className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-sm text-slate-300 transition hover:bg-white/10"
-              title="Menu"
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.10] bg-white/[0.08]"
+              title="Profile"
             >
-              ☰
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-400">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
             </button>
 
-            <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
-              Prototype • Localhost
-            </div>
+            {/* Settings */}
+            <button type="button" className="p-1 text-zinc-400 transition hover:text-white" title="Settings">
+              <svg width="16" height="12" viewBox="0 0 16 12" fill="none">
+                <line x1="0" y1="1" x2="16" y2="1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <line x1="0" y1="6" x2="16" y2="6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <line x1="0" y1="11" x2="16" y2="11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </button>
           </div>
         </header>
 
-        <div className="mb-5 flex items-end justify-between">
-          <div className="flex items-center gap-5 border-b border-white/10">
+        {/* Dot pattern — content area only, below header */}
+        <div
+          aria-hidden="true"
+          className={`pointer-events-none fixed bottom-0 left-0 right-0 transition-opacity duration-[380ms] ease-out ${isActive ? 'opacity-0' : 'opacity-100'}`}
+          style={{
+            top: 0,
+            zIndex: 5,
+            backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.08) 1px, transparent 1px)',
+            backgroundSize: '24px 24px',
+            maskImage: 'radial-gradient(ellipse 700px 500px at 50% 62%, transparent 25%, black 100%)',
+            WebkitMaskImage: 'radial-gradient(ellipse 700px 500px at 50% 62%, transparent 25%, black 100%)',
+          }}
+        />
+
+        {/* Solve Surface */}
+        <section className="px-2 py-2">
+
+          {/* Workspace controls — always visible */}
+          <div className="mb-4 flex items-center justify-between">
+            <button
+              type="button"
+              className="flex h-7 w-7 items-center justify-center text-zinc-500 transition hover:text-zinc-300"
+              title="History"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+            </button>
+
+            {artifact && (
+              <button
+                type="button"
+                onClick={() => setStudyMode((s) => !s)}
+                className={`text-xs transition ${studyMode ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+              >
+                {studyMode ? 'Exit study mode' : 'Study mode'}
+              </button>
+            )}
+          </div>
+
+          {loading && (
+            <div className="flex min-h-[300px] items-start justify-center px-6 pt-24 text-center text-sm text-zinc-500">
+              Thinking through the problem...
+            </div>
+          )}
+
+          {artifact && (
+            <div className="flex flex-col">
+
+              {/* Final Answer block */}
+              <div className="rounded-[24px] border border-white/[0.08] bg-white/[0.04] px-6 py-5">
+                <div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Final Answer</div>
+
+                <div className="text-lg sm:text-xl">
+                  <BlockMath math={artifact.solution.final_answer_latex} />
+                </div>
+
+                {/* Badge */}
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <div
+                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${getBadgeClasses(artifact.verification.badge)}`}
+                  >
+                    <span>{getBadgeLabel(artifact.verification.badge)}</span>
+                    {certaintyLabel && <span className="opacity-80">• {certaintyLabel}</span>}
+                  </div>
+                </div>
+
+                {/* One-line verification summary */}
+                {artifact.verification.user_reason && (
+                  <div className="mt-3 text-sm leading-6 text-zinc-300">
+                    {artifact.verification.user_reason}
+                  </div>
+                )}
+
+                {/* Action cluster */}
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowProofDetails((v) => !v)}
+                    className={`rounded-full border px-3 py-1 text-xs transition ${
+                      showProofDetails
+                        ? 'border-white/20 bg-white/[0.08] text-white'
+                        : 'border-white/10 bg-white/[0.05] text-zinc-300 hover:bg-white/[0.08]'
+                    }`}
+                  >
+                    {showProofDetails ? 'Hide proof details' : 'Proof details'}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-xs text-zinc-300 transition hover:bg-white/[0.08]"
+                  >
+                    Advanced verification
+                  </button>
+
+                  <button
+                    type="button"
+                    className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-xs text-zinc-300 transition hover:bg-white/[0.08]"
+                  >
+                    View graph
+                  </button>
+                </div>
+
+                {/* Suggestions — contextual, failure/parser states only */}
+                {artifact.suggestions.length > 0 && (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {artifact.suggestions.map((s, i) => (
+                      <button
+                        key={`${s.action}-${i}`}
+                        type="button"
+                        onClick={() => handleSuggestion(s.action)}
+                        className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-xs text-zinc-300 transition hover:bg-white/[0.08]"
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Proof details panel (inline; Phase 2 converts to drawer) */}
+                {showProofDetails && (
+                  <div className="mt-5 rounded-[20px] border border-white/8 bg-white/[0.03] px-5 py-4">
+                    <div className="mb-3 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Proof Details</div>
+
+                    <div className="space-y-3">
+                      {verificationDetails.length > 0 ? (
+                        verificationDetails.map((detail) => (
+                          <div key={detail.label} className="rounded-[14px] border border-white/8 bg-white/[0.03] px-3 py-3">
+                            <div className="text-[10px] uppercase tracking-[0.16em] text-zinc-500">
+                              {detail.label}
+                            </div>
+                            <div className={`${jetbrainsMono.className} mt-1 text-sm leading-6 text-zinc-200`}>{detail.value}</div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-sm leading-6 text-zinc-400">
+                          Detailed verification metadata is not available for this result.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <FlowDivider />
+
+              {/* Overview */}
+              <div className="rounded-[22px] bg-white/[0.04] px-5 py-4">
+                <div className="mb-2 text-xs uppercase tracking-[0.16em] text-zinc-500">Overview</div>
+                <p className="max-w-[850px] text-[15px] leading-8 text-zinc-200">
+                  {artifact.solution.overview}
+                </p>
+              </div>
+
+              <FlowDivider />
+
+              {/* Solution sections */}
+              {!studyMode && (
+                <div className="flex flex-col">
+                  {artifact.solution.sections.map((sec, i) => {
+                    const isOpen = openExplainIndex === i;
+
+                    return (
+                      <div key={i} className="relative">
+                        <section className={`rounded-[22px] px-4 py-4 transition ${interactiveMode ? 'border-l-2 border-white/[0.15] pl-5' : ''}`}>
+                          <div className="mb-3 text-[17px] font-semibold tracking-tight text-white">
+                            {sec.title}
+                          </div>
+
+                          <div className="mb-4 text-lg">
+                            <BlockMath math={sec.summary_latex} />
+                          </div>
+
+                          <p className="max-w-[850px] text-[15px] leading-8 text-zinc-200">
+                            {sec.explanation}
+                          </p>
+
+                          <button
+                            type="button"
+                            onClick={() => setOpenExplainIndex(isOpen ? null : i)}
+                            className="mt-4 text-xs font-medium text-zinc-400 transition hover:text-white"
+                          >
+                            {isOpen ? 'Hide underlying principle' : 'Why this works'}
+                          </button>
+
+                          {isOpen && (
+                            <div className="mt-4 rounded-[18px] border border-white/8 bg-white/[0.03] px-4 py-4 text-sm leading-8 text-zinc-300">
+                              {sec.concept || 'No concept explanation available for this step.'}
+                            </div>
+                          )}
+                        </section>
+
+                        {i < artifact.solution.sections.length - 1 && <FlowDivider />}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {studyMode && (
+                <div className="rounded-[24px] border border-white/[0.08] bg-white/[0.03] px-5 py-5">
+                  <div className="mb-4 text-xs uppercase tracking-[0.16em] text-zinc-500">Study Flow</div>
+
+                  <div className="space-y-6">
+                    {artifact.solution.sections.map((sec, i) => (
+                      <div key={i}>
+                        <h3 className="mb-3 text-base font-semibold text-white">{sec.title}</h3>
+                        <div className="mb-3 text-lg">
+                          <BlockMath math={sec.summary_latex} />
+                        </div>
+                        <p className="max-w-[850px] text-[15px] leading-8 text-zinc-200">
+                          {sec.explanation}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
+
+        </section>
+      </div>
+
+      {/* Floating Input Composer — animates position/width on submit */}
+      <div
+        className="fixed z-50"
+        style={{
+          left: '50%',
+          transform: 'translateX(-50%)',
+          bottom: isActive ? 0 : '32vh',
+          width: isActive ? '100%' : '700px',
+          maxWidth: '100%',
+          paddingLeft: isActive ? '1.5rem' : 0,
+          paddingRight: isActive ? '1.5rem' : 0,
+          paddingTop: isActive ? '2.5rem' : 0,
+          paddingBottom: isActive ? '1.25rem' : 0,
+          background: isActive
+            ? 'linear-gradient(to top, #09090b 55%, transparent)'
+            : 'transparent',
+          transition: 'all 380ms ease-out',
+        }}
+      >
+        {/* Left: Mode tabs / Right: Interactive bookmark — both relative to composer */}
+        <div className="relative mb-0">
+          {/* Mode tabs — z-20, sit on top */}
+          <div className="relative z-20 mb-3 flex items-center gap-5 pl-4">
             <button
               type="button"
               onClick={() => setMode('math')}
-              className={`pb-2 text-sm font-medium transition-colors ${
+              className={`pb-1 text-sm font-medium transition-colors ${
                 mode === 'math'
-                  ? 'border-b-2 border-blue-500 text-white'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'border-b-2 border-white text-white'
+                  : 'text-zinc-500 hover:text-zinc-300'
               }`}
             >
               Math
             </button>
 
             <button
-          type="button"
-          onClick={() => setMode('physics')}
-          className={`pb-2 text-sm font-medium transition-colors ${
-            mode === 'physics'
-              ? 'border-b-2 border-blue-500 text-white'
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          Physics
-        </button>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
               type="button"
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/5 text-sm text-slate-300 transition hover:bg-white/10"
-              title="History"
+              onClick={() => setMode('physics')}
+              className={`pb-1 text-sm font-medium transition-colors ${
+                mode === 'physics'
+                  ? 'border-b-2 border-white text-white'
+                  : 'text-zinc-500 hover:text-zinc-300'
+              }`}
             >
-              ⏱
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setStudyMode((s) => !s)}
-              className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-white/10"
-            >
-              {studyMode ? 'Standard view' : 'Study mode'}
+              Physics
             </button>
           </div>
+
+          {/* Interactive tab — top-right, overlaps input top edge */}
+          <button
+            type="button"
+            onClick={() => setInteractiveMode((v) => !v)}
+            className="absolute right-6 cursor-pointer rounded-t-md border border-b-0 px-3 py-1.5"
+            style={{
+              top: 0,
+              transform: 'translateY(40%)',
+              zIndex: interactiveMode ? 15 : 5,
+              background: interactiveMode ? '#3f3f46' : '#27272a',
+              borderColor: interactiveMode ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.08)',
+              boxShadow: interactiveMode ? 'none' : '0 -2px 8px rgba(0,0,0,0.5)',
+              color: interactiveMode ? '#fff' : '#71717a',
+              transition: 'all 150ms ease-out',
+            }}
+          >
+            <span className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest">
+              <span
+                className="h-1.5 w-1.5 rounded-full"
+                style={{
+                  background: interactiveMode ? '#fff' : '#52525b',
+                  transition: 'background-color 150ms ease-out',
+                }}
+              />
+              Interactive
+            </span>
+          </button>
         </div>
 
-        <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,2.8fr)_300px] xl:grid-cols-[minmax(0,3fr)_320px]">
-          <section className="min-h-[720px] rounded-[30px] border border-white/6 bg-white/[0.025] px-6 py-6 shadow-[0_0_0_1px_rgba(255,255,255,0.015)] lg:min-h-[820px]">
-             {!artifact && !loading && (
-              <div className="flex h-full min-h-[620px] items-center justify-center rounded-[24px] border border-white/6 bg-gradient-to-b from-white/[0.03] to-transparent px-6 text-center text-sm text-slate-500 lg:min-h-[700px]">
-                <div className="max-w-[420px] -mt-10">
-                  <div className="text-base font-medium text-slate-200">
-                    Enter a problem to generate:
-                  </div>
+        {/* Composer */}
+        <form id="solver-form" onSubmit={handleSubmit} ref={composerRef}>
+          <div
+            className="relative z-10 rounded-[26px] border bg-zinc-900 shadow-[0_8px_40px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur-xl"
+            style={{
+              borderColor: interactiveMode ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.10)',
+              transition: 'border-color 150ms ease-out',
+            }}
+          >
 
-                  <div className="mt-4 inline-block space-y-1 text-left text-sm text-slate-400">
-                    <div>• Structured solution</div>
-                    <div>• Verified answer when possible</div>
-                    <div>• Section-by-section breakdown</div>
-                  </div>
-
-                  <div className="mt-6 text-center text-xs text-slate-500">
-                    Example: {examples[0]}
-                  </div>
+            {/* Attachment preview */}
+            {attachedFile && (
+              <div className="flex items-center gap-2 px-5 pt-3">
+                <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-xs text-zinc-300">
+                  <span>{attachedFile.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => setAttachedFile(null)}
+                    className="ml-1 text-zinc-500 hover:text-zinc-200"
+                  >
+                    ×
+                  </button>
                 </div>
               </div>
             )}
 
-            {loading && (
-              <div className="flex h-full min-h-[620px] items-start justify-center rounded-[24px] border border-dashed border-white/10 bg-white/[0.02] px-6 pt-24 text-center text-sm text-slate-500 lg:min-h-[700px]">
-                Thinking through the problem...
+            {/* Format hint — shown when SHOW_FORMAT_EXAMPLE suggestion is triggered */}
+            {showFormatHint && (
+              <div className="mx-5 mt-3 flex items-start justify-between gap-3 rounded-[14px] border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-xs text-zinc-400">
+                <span>Format tip: write equations in standard notation, e.g. <span className="text-zinc-200">2x + 3 = 7</span> or <span className="text-zinc-200">x^2 - 4 = 0</span>. Avoid prose like "solve two x plus three equals seven."</span>
+                <button type="button" onClick={() => setShowFormatHint(false)} className="shrink-0 text-zinc-600 hover:text-zinc-300">×</button>
               </div>
             )}
 
-            {artifact && (
-              <div className="flex flex-col">
-                <div className="rounded-[24px] border border-blue-400/20 bg-gradient-to-br from-blue-500/10 via-slate-900/70 to-slate-900/70 px-6 py-5 shadow-[0_10px_40px_rgba(59,130,246,0.08)]">
-                  <div className="min-w-0">
-                    <div className="mb-2 text-xs uppercase tracking-[0.18em] text-blue-200/70">Final Answer</div>
-                    <div className="text-lg sm:text-xl">
-                      <BlockMath math={artifact.solution.final_answer_latex} />
-                    </div>
-                  </div>
-
-                  <div className="mt-4 flex flex-wrap items-center gap-2">
-                    <div
-                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${getBadgeClasses(
-                        artifact.verification.badge,
-                      )}`}
-                    >
-                      <span>{getBadgeLabel(artifact.verification.badge)}</span>
-                      {certaintyLabel && <span className="opacity-80">• {certaintyLabel}</span>}
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setOpenRailPanel((current) => (current === 'verification' ? null : 'verification'))
-                      }
-                      className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-xs text-slate-300 transition hover:bg-white/[0.08]"
-                    >
-                      {openRailPanel === 'verification' ? 'Hide verification details' : 'View verification details'}
-                    </button>
-                  </div>
-
-                  {verificationPreview && (
-                    <div className="mt-3 text-sm leading-6 text-slate-300">{verificationPreview}</div>
-                  )}
-
-                  {artifact.verification.user_reason && (
-                    <div className="mt-3 text-xs leading-6 text-slate-400">
-                      {artifact.verification.user_reason}
-                    </div>
-                  )}
-
-                  {artifact.suggestions.length > 0 && (
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {artifact.suggestions.map((s, i) => (
-                        <button
-                          key={`${s.action}-${i}`}
-                          type="button"
-                          className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-xs text-slate-300 transition hover:bg-white/[0.08]"
-                        >
-                          {s.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <FlowDivider />
-
-                <div className="rounded-[22px] bg-white/[0.025] px-5 py-4">
-                  <div className="mb-2 text-xs uppercase tracking-[0.16em] text-slate-500">Overview</div>
-                  <p className="max-w-[850px] text-[15px] leading-8 text-slate-200">
-                    {artifact.solution.overview}
-                  </p>
-                </div>
-
-                <FlowDivider />
-
-                {!studyMode && (
-                  <div className="flex flex-col">
-                    {artifact.solution.sections.map((sec, i) => {
-                      const isOpen = openExplainIndex === i;
-
-                      return (
-                        <div key={i} className="relative">
-                          <section className="rounded-[22px] px-4 py-4 transition">
-                            <div className="mb-3 text-[17px] font-semibold tracking-tight text-white">
-                              {sec.title}
-                            </div>
-
-                            <div className="mb-4 text-lg">
-                              <BlockMath math={sec.summary_latex} />
-                            </div>
-
-                            <p className="max-w-[850px] text-[15px] leading-8 text-slate-200">
-                              {sec.explanation}
-                            </p>
-
-                            <button
-                              type="button"
-                              onClick={() => setOpenExplainIndex(isOpen ? null : i)}
-                              className="mt-4 text-xs font-medium text-blue-300 transition hover:text-blue-200"
-                            >
-                              {isOpen ? 'Hide underlying principle' : 'Why this works'}
-                            </button>
-
-                            {isOpen && (
-                              <div className="mt-4 rounded-[18px] border border-white/8 bg-white/[0.03] px-4 py-4 text-sm leading-8 text-slate-300">
-                                {getConceptText(sec)}
-                              </div>
-                            )}
-                          </section>
-
-                          {i < artifact.solution.sections.length - 1 && <FlowDivider />}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {studyMode && (
-                  <div className="rounded-[24px] border border-blue-300/10 bg-gradient-to-b from-blue-500/[0.06] to-slate-900/40 px-5 py-5">
-                    <div className="mb-4 text-xs uppercase tracking-[0.16em] text-blue-200/70">Study Flow</div>
-
-                    <div className="space-y-6">
-                      {artifact.solution.sections.map((sec, i) => (
-                        <div key={i}>
-                          <h3 className="mb-3 text-base font-semibold text-white">{sec.title}</h3>
-
-                          <div className="mb-3 text-lg">
-                            <BlockMath math={sec.summary_latex} />
-                          </div>
-
-                          <p className="max-w-[850px] text-[15px] leading-8 text-slate-200">
-                            {sec.explanation}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </section>
-
-          <aside className="flex flex-col gap-4">
-            <div className="rounded-[26px] border border-white/6 bg-white/[0.025] px-3 py-3">
-              <div className="flex flex-col gap-2">
-                <UtilityAction
-                  label="Graph"
-                  hint="Open graph panel"
-                  active={openRailPanel === 'graph'}
-                  onClick={() => setOpenRailPanel((current) => (current === 'graph' ? null : 'graph'))}
-                />
-
-                {artifact && (
-                  <UtilityAction
-                    label="Verification"
-                    hint="Open verification panel"
-                    active={openRailPanel === 'verification'}
-                    onClick={() =>
-                      setOpenRailPanel((current) => (current === 'verification' ? null : 'verification'))
-                    }
-                  />
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-[26px] border border-white/6 bg-white/[0.025] px-4 py-4">
-              {!artifact && !loading && (
-                <div>
-                  <div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-slate-500">Support Panel</div>
-                  <div className="text-xs leading-6 text-slate-500">
-                    Graphs, verification details, and result-side tools will appear here.
-                  </div>
-                </div>
-              )}
-
-              {artifact && openRailPanel === 'verification' && (
-                <div>
-                  <div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-slate-500">Verification</div>
-                  <div className="mb-3 text-sm font-medium text-white">{getBadgeLabel(artifact.verification.badge)}</div>
-                  <div className="mb-4 text-xs leading-6 text-slate-400">{artifact.verification.user_reason}</div>
-
-                  <div className="space-y-3">
-                    {verificationDetails.length > 0 ? (
-                      verificationDetails.map((detail) => (
-                        <div key={detail.label} className="rounded-[18px] border border-white/8 bg-white/[0.03] px-3 py-3">
-                          <div className="text-[10px] uppercase tracking-[0.16em] text-slate-500">
-                            {detail.label}
-                          </div>
-                          <div className="mt-2 text-sm leading-6 text-slate-200">{detail.value}</div>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="rounded-[18px] border border-white/8 bg-white/[0.03] px-3 py-3 text-sm leading-6 text-slate-300">
-                        Detailed verification metadata is not available for this result yet.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {artifact && openRailPanel === 'graph' && (
-                <div>
-                  <div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-slate-500">Graph</div>
-                  <div className="mb-3 text-sm font-medium text-white">Graph panel</div>
-                  <div className="rounded-[18px] border border-white/8 bg-white/[0.03] px-3 py-3 text-sm leading-6 text-slate-300">
-                    Basic graph rendering will live here. Keep core graphing free; reserve richer graph interactions for a later premium layer.
-                  </div>
-                </div>
-              )}
-
-              {artifact && !openRailPanel && (
-                <div>
-                  <div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-slate-500">Result Tools</div>
-                  <div className="text-xs leading-6 text-slate-400">
-                    Open verification for the proof trail or graph for visual support.
-                  </div>
-                </div>
-              )}
-            </div>
-          </aside>
-        </div>
-
-        <div className="mt-4 rounded-[28px] border border-white/8 bg-white/[0.05] px-4 py-4 shadow-[0_-12px_40px_rgba(0,0,0,0.16)]">
-          <div className="mb-3 flex items-center justify-between gap-4">
-            <div>
-              <div className="text-sm font-medium text-white">Question Input</div>
-              <div className="mt-1 text-xs text-slate-400">
-                Mode: {mode === 'math' ? 'Math (Algebra & Calculus)' : 'Physics (Engineering problems)'}
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              form="solver-form"
-              disabled={loading || !question.trim()}
-              className="rounded-full bg-blue-500 px-5 py-2 text-sm font-medium text-white shadow-[0_6px_24px_rgba(59,130,246,0.35)] transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {loading ? 'Solving...' : 'Solve'}
-            </button>
-          </div>
-
-          <form id="solver-form" onSubmit={handleSubmit} className="relative">
+            {/* Textarea */}
             <textarea
+              ref={textareaRef}
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
+              onKeyDown={handleKeyDown}
               placeholder={`e.g. ${examples[exampleIndex]}`}
-              className="h-28 w-full rounded-[22px] border border-white/10 bg-slate-950/70 px-4 py-3 pr-14 text-sm text-slate-100 placeholder:text-slate-500 outline-none transition focus:border-blue-400/40"
+              rows={3}
+              className="block w-full resize-none bg-transparent px-5 pb-2 pt-4 text-sm text-zinc-100 placeholder:text-zinc-600 outline-none"
             />
 
-            {mode === 'math' && (
+            {/* Toolbar row */}
+            <div className="flex items-center justify-between px-3 pb-3">
+              {/* Left: attachment + math keyboard + interactive indicator */}
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-400 transition hover:bg-white/[0.06] hover:text-zinc-200"
+                  title="Attach image"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                  </svg>
+                </button>
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+
+                {mode === 'math' && (
+                  <button
+                    ref={mathKeyboardRef}
+                    type="button"
+                    className={`flex h-8 w-8 items-center justify-center rounded-full text-sm transition ${
+                      mathKeyboardFlash
+                        ? 'bg-white/[0.12] text-white'
+                        : 'text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200'
+                    }`}
+                    title="Open math keyboard"
+                  >
+                    ∑
+                  </button>
+                )}
+              </div>
+
+              {/* Interactive mode pill */}
+              {interactiveMode && (
+                <span className="ml-1 rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 text-[10px] text-zinc-500">
+                  Interactive
+                </span>
+              )}
+
+              {/* Right: Solve */}
               <button
-                type="button"
-                className="absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/[0.05] text-sm text-slate-300 transition hover:bg-white/[0.08]"
-                title="Open math keyboard"
+                type="submit"
+                disabled={loading || !question.trim()}
+                className="flex items-center justify-center gap-2 rounded-full bg-white px-5 py-1.5 text-sm font-medium text-zinc-950 transition hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                ∑
+                {loading ? (
+                  'Solving...'
+                ) : (
+                  <>
+                    <span>Solve</span>
+                    <span className="leading-none">→</span>
+                  </>
+                )}
               </button>
-            )}
-          </form>
-        </div>
+            </div>
+          </div>
+        </form>
       </div>
     </main>
   );
@@ -677,32 +754,5 @@ function FlowDivider() {
       <div className="h-px w-12 bg-white/16" />
       <div className="h-px flex-1 bg-white/10" />
     </div>
-  );
-}
-
-function UtilityAction({
-  label,
-  hint,
-  active,
-  onClick,
-}: {
-  label: string;
-  hint: string;
-  active?: boolean;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`w-full rounded-[18px] border px-3 py-3 text-left transition ${
-        active
-          ? 'border-blue-400/25 bg-blue-500/[0.08]'
-          : 'border-white/8 bg-white/[0.03] hover:bg-white/[0.06]'
-      }`}
-    >
-      <div className="text-sm font-medium text-white">{label}</div>
-      <div className="mt-1 text-[11px] leading-5 text-slate-500">{hint}</div>
-    </button>
   );
 }
