@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e ' *)",
+      "Bash(taskkill /F /IM node.exe)",
+      "Bash(curl -s -X POST http://localhost:5000/solve -H 'Content-Type: application/json' -d '{\"question\":\"factor x^2+5x-8=37\",\"mode\":\"math\"}')",
+      "Bash(curl -s http://localhost:5000/)",
+      "Bash(rm -f \"C:/Users/hesha/Documents/my-ai-app/debug.log\")"
+    ]
+  }
+}

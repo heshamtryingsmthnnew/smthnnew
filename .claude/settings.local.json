@@ -11,7 +11,8 @@
       "Bash(jobs -l)",
       "Bash(node -e ':*)",
       "Bash(npx tsc:*)",
-      "Bash(node_modules/.bin/tsc --noEmit)"
+      "Bash(node_modules/.bin/tsc --noEmit)",
+      "Bash(node -e ' *)"
     ]
   }
 }

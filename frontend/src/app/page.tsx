@@ -65,15 +65,18 @@ type Artifact = {
 };
 
 const MATH_EXAMPLES = [
-  'Solve 2x + 3 = 7',
-  'Factor x^2 + 5x + 6',
-  'Solve the system: x + y = 7 and x - y = 1',
+  'x^2 + 5x + 6 = 0',
+  '2x + y = 7 and x - y = 1',
+  'integrate x^2 * sin(x) dx',
+  'differentiate x^3 * ln(x)',
+  'simplify sin^2(x) + cos^2(x)',
 ];
 
 const PHYSICS_EXAMPLES = [
-  'A 2 kg block is pulled by a 10 N force. Find the acceleration.',
-  'Find the final velocity after 5 s if a = 3 m/s^2 and u = 2 m/s',
-  'A 5 kg object is lifted 3 m. Find the work done against gravity.',
+  'A 5 kg object is pushed with 20 N of force. Find acceleration.',
+  'A ball launched at 30 m/s at 45 degrees. Find the range.',
+  'Two resistors 4 ohms and 6 ohms in parallel. Find equivalent resistance.',
+  'A 2 kg block slides down a 30 degree frictionless ramp. Find velocity at bottom.',
 ];
 
 function getBadgeLabel(badge: Artifact['verification']['badge']) {
@@ -189,10 +192,10 @@ function getVerificationDetails(artifact: Artifact | null) {
 export default function Home() {
   const [mode, setMode] = useState<Mode>('math');
   const [question, setQuestion] = useState('');
+  const [ghostQuestion, setGhostQuestion] = useState('');
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [loading, setLoading] = useState(false);
   const [openExplainIndex, setOpenExplainIndex] = useState<number | null>(null);
-  const [studyMode, setStudyMode] = useState(false);
   const [showProofDetails, setShowProofDetails] = useState(false);
   const [exampleIndex, setExampleIndex] = useState(0);
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
@@ -224,6 +227,7 @@ export default function Home() {
     if (loading || !question.trim()) return;
     setLoading(true);
     setArtifact(null);
+    setGhostQuestion('');
     setOpenExplainIndex(null);
     setShowProofDetails(false);
 
@@ -237,6 +241,8 @@ export default function Home() {
       console.error(err);
       setArtifact(null);
     } finally {
+      setGhostQuestion(question);
+      setQuestion('');
       setLoading(false);
     }
   };
@@ -360,15 +366,6 @@ export default function Home() {
               </svg>
             </button>
 
-            {artifact && (
-              <button
-                type="button"
-                onClick={() => setStudyMode((s) => !s)}
-                className={`text-xs transition ${studyMode ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
-              >
-                {studyMode ? 'Exit study mode' : 'Study mode'}
-              </button>
-            )}
           </div>
 
           {loading && (
@@ -406,29 +403,25 @@ export default function Home() {
                 )}
 
                 {/* Action cluster */}
-                <div className="mt-4 flex flex-wrap gap-2">
+                <div className="mt-4 flex items-center gap-3 text-xs text-zinc-600">
                   <button
                     type="button"
                     onClick={() => setShowProofDetails((v) => !v)}
-                    className={`rounded-full border px-3 py-1 text-xs transition ${
-                      showProofDetails
-                        ? 'border-white/20 bg-white/[0.08] text-white'
-                        : 'border-white/10 bg-white/[0.05] text-zinc-300 hover:bg-white/[0.08]'
-                    }`}
+                    className="transition hover:text-zinc-300"
                   >
-                    {showProofDetails ? 'Hide proof details' : 'Proof details'}
+                    {showProofDetails ? 'Hide proof' : 'Proof details'}
                   </button>
-
+                  <span className="text-zinc-800">|</span>
                   <button
                     type="button"
-                    className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-xs text-zinc-300 transition hover:bg-white/[0.08]"
+                    className="transition hover:text-zinc-300"
                   >
                     Advanced verification
                   </button>
-
+                  <span className="text-zinc-800">|</span>
                   <button
                     type="button"
-                    className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-xs text-zinc-300 transition hover:bg-white/[0.08]"
+                    className="transition hover:text-zinc-300"
                   >
                     View graph
                   </button>
@@ -488,67 +481,45 @@ export default function Home() {
               <FlowDivider />
 
               {/* Solution sections */}
-              {!studyMode && (
-                <div className="flex flex-col">
-                  {artifact.solution.sections.map((sec, i) => {
-                    const isOpen = openExplainIndex === i;
+              <div className="flex flex-col">
+                {artifact.solution.sections.map((sec, i) => {
+                  const isOpen = openExplainIndex === i;
 
-                    return (
-                      <div key={i} className="relative">
-                        <section className={`rounded-[22px] px-4 py-4 transition ${interactiveMode ? 'border-l-2 border-white/[0.15] pl-5' : ''}`}>
-                          <div className="mb-3 text-[17px] font-semibold tracking-tight text-white">
-                            {sec.title}
-                          </div>
+                  return (
+                    <div key={i} className="relative">
+                      <section className={`rounded-[22px] px-4 py-4 transition ${interactiveMode ? 'border-l-2 border-white/[0.15] pl-5' : ''}`}>
+                        <div className="mb-3 text-[17px] font-semibold tracking-tight text-white">
+                          {sec.title}
+                        </div>
 
-                          <div className="mb-4 text-lg">
-                            <BlockMath math={sec.summary_latex} />
-                          </div>
-
-                          <p className="max-w-[850px] text-[15px] leading-8 text-zinc-200">
-                            {sec.explanation}
-                          </p>
-
-                          <button
-                            type="button"
-                            onClick={() => setOpenExplainIndex(isOpen ? null : i)}
-                            className="mt-4 text-xs font-medium text-zinc-400 transition hover:text-white"
-                          >
-                            {isOpen ? 'Hide underlying principle' : 'Why this works'}
-                          </button>
-
-                          {isOpen && (
-                            <div className="mt-4 rounded-[18px] border border-white/8 bg-white/[0.03] px-4 py-4 text-sm leading-8 text-zinc-300">
-                              {sec.concept || 'No concept explanation available for this step.'}
-                            </div>
-                          )}
-                        </section>
-
-                        {i < artifact.solution.sections.length - 1 && <FlowDivider />}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {studyMode && (
-                <div className="rounded-[24px] border border-white/[0.08] bg-white/[0.03] px-5 py-5">
-                  <div className="mb-4 text-xs uppercase tracking-[0.16em] text-zinc-500">Study Flow</div>
-
-                  <div className="space-y-6">
-                    {artifact.solution.sections.map((sec, i) => (
-                      <div key={i}>
-                        <h3 className="mb-3 text-base font-semibold text-white">{sec.title}</h3>
-                        <div className="mb-3 text-lg">
+                        <div className="mb-4 text-lg">
                           <BlockMath math={sec.summary_latex} />
                         </div>
+
                         <p className="max-w-[850px] text-[15px] leading-8 text-zinc-200">
                           {sec.explanation}
                         </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+
+                        <button
+                          type="button"
+                          onClick={() => setOpenExplainIndex(isOpen ? null : i)}
+                          className="mt-4 text-xs font-medium text-zinc-400 transition hover:text-white"
+                        >
+                          {isOpen ? 'Hide underlying principle' : 'Why this works'}
+                        </button>
+
+                        {isOpen && (
+                          <div className="mt-4 rounded-[18px] border border-white/8 bg-white/[0.03] px-4 py-4 text-sm leading-8 text-zinc-300">
+                            {sec.concept || 'No concept explanation available for this step.'}
+                          </div>
+                        )}
+                      </section>
+
+                      {i < artifact.solution.sections.length - 1 && <FlowDivider />}
+                    </div>
+                  );
+                })}
+              </div>
 
             </div>
           )}
@@ -582,7 +553,8 @@ export default function Home() {
             <button
               type="button"
               onClick={() => setMode('math')}
-              className={`pb-1 text-sm font-medium transition-colors ${
+              disabled={loading}
+              className={`pb-1 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                 mode === 'math'
                   ? 'border-b-2 border-white text-white'
                   : 'text-zinc-500 hover:text-zinc-300'
@@ -594,7 +566,8 @@ export default function Home() {
             <button
               type="button"
               onClick={() => setMode('physics')}
-              className={`pb-1 text-sm font-medium transition-colors ${
+              disabled={loading}
+              className={`pb-1 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                 mode === 'physics'
                   ? 'border-b-2 border-white text-white'
                   : 'text-zinc-500 hover:text-zinc-300'
@@ -608,11 +581,12 @@ export default function Home() {
           <button
             type="button"
             onClick={() => setInteractiveMode((v) => !v)}
-            className="absolute right-6 cursor-pointer rounded-t-md border border-b-0 px-3 py-1.5"
+            disabled={loading}
+            className="absolute right-6 cursor-pointer rounded-t-md border border-b-0 px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-50"
             style={{
               top: 0,
               transform: 'translateY(40%)',
-              zIndex: interactiveMode ? 15 : 5,
+              zIndex: interactiveMode ? 25 : 22,
               background: interactiveMode ? '#3f3f46' : '#27272a',
               borderColor: interactiveMode ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.08)',
               boxShadow: interactiveMode ? 'none' : '0 -2px 8px rgba(0,0,0,0.5)',
@@ -673,9 +647,10 @@ export default function Home() {
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={`e.g. ${examples[exampleIndex]}`}
+              disabled={loading}
+              placeholder={ghostQuestion || examples[exampleIndex]}
               rows={3}
-              className="block w-full resize-none bg-transparent px-5 pb-2 pt-4 text-sm text-zinc-100 placeholder:text-zinc-600 outline-none"
+              className="block w-full resize-none bg-transparent px-5 pb-2 pt-4 text-sm text-zinc-100 placeholder:text-zinc-600 outline-none disabled:cursor-not-allowed disabled:opacity-50"
             />
 
             {/* Toolbar row */}

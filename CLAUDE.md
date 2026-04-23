@@ -23,7 +23,9 @@ It **IS**:
 - A product whose core differentiator is **visible correctness / visible validation / legible trust**
 - A focused solving surface: type problem → see answer → trust state visible immediately → follow the work → inspect deeper only if needed
 - Broad audience: engineers, grad students, researchers, advanced students, professionals — anyone who has been burned by a confident wrong AI answer
-
+- Built for students in technical programs — advanced undergrad, grad students, anyone
+  working through math-heavy coursework who needs a correct verifiable answer.
+  Not a homework helper. Not a tutor. A precision instrument with a student audience.
 The product should feel **engineered, minimal, precise, trustworthy without noise, powerful without clutter.**
 It should feel like an environment, not a webpage.
 
@@ -113,13 +115,11 @@ Originally planned as a separate Haiku API call for Tier 2 normalization.
 The same Sonnet call returns a `normalized_expression` field alongside the solution.
 Reason: zero extra cost, zero extra latency, simpler architecture.
 
-### Pivot 6: OpenAI → Anthropic (Claude)
-Currently on OpenAI for solution generation.
-**Changing in Phase 2a:** Migrate entirely to Anthropic.
-- Solution generation: claude-sonnet-4-5
-- No separate normalization model needed (embedded)
-- CAS/advanced verification: claude-sonnet-4-5
-Reason: single provider, cleaner codebase, Claude is more instruction-following for structured JSON.
+### Pivot 6: OpenAI → Anthropic (Claude) ✅ COMPLETE
+Migrated entirely to Anthropic SDK (@anthropic-ai/sdk v0.88.0).
+Solution generation: claude-sonnet-4-5
+Normalization embedded in solution call — no separate model needed.
+OpenAI fully removed from codebase.
 
 ---
 
@@ -181,10 +181,10 @@ NO "AI checks AI" for correctness. Deterministic is always the correctness autho
 
 ## 7. AI Model Architecture (Locked)
 
-- **Solution generation:** `claude-sonnet-4-5`
-- **Normalization:** embedded in solution call — no separate model
-- **CAS future:** `claude-sonnet-4-5`
-- **OpenAI:** being removed in Phase 2a, zero OpenAI references after that
+- Solution generation: claude-sonnet-4-5
+- Normalization: embedded in solution call — no separate model
+- CAS future: claude-sonnet-4-5
+- OpenAI: fully removed
 
 ---
 
@@ -218,78 +218,131 @@ At 4% free-to-paid conversion: need ~7,500 active free users.
 
 ---
 
-## 9. Implementation Phases
+## Section 9 — Implementation Phases (replace entire section)
 
-### ✅ Completed
-- Phase 1: Right rail removal, action cluster, header cleanup
-- Phase 1b: Full-width layout, empty state, floating input, slogan
-- Phase 1c: Ergo. rename, font system, zinc colors, animated input, dot pattern,
-            Interactive mode tab, header restructure (identity + account only),
-            header solid background over dots, header micro-fixes (menu icon, tab alignment)
+```
+9. Implementation Phases
 
-### 🔲 Phase 2a — OpenAI → Claude + Normalization Embedding (NEXT)
-1. Replace OpenAI SDK with Anthropic SDK (`@anthropic-ai/sdk`)
-2. Rewrite solution generation prompt for Claude Sonnet 4-5
-3. Add `normalized_expression` to structured output schema
-4. Store and use `normalized_expression` for deterministic validation retry
-5. Verify output quality: `final_answer_latex`, `overview`, `sections` all maintained
-6. Update `cost_meta` to reflect claude model
-7. Remove all OpenAI references from codebase
+✅ Completed
 
-### 🔲 Phase 2b — Suggestion Wiring
+Phase 1: Right rail removal, action cluster, header cleanup
+Phase 1b: Full-width layout, empty state, floating input, slogan
+Phase 1c: Ergo. rename, font system, zinc colors, animated input, dot pattern,
+          Interactive mode tab, header restructure (identity + account only),
+          header solid background over dots, header micro-fixes (menu icon, tab alignment)
+
+Phase 2a: OpenAI → Claude + Normalization Embedding ✅ COMPLETE
+  - Replaced OpenAI SDK with @anthropic-ai/sdk (v0.88.0)
+  - Solution generation on claude-sonnet-4-5
+  - normalized_expression embedded in structured solution schema
+  - normalized_expression used for deterministic validation retry
+  - BUILD_VERSION set to "v2.0.0-claude-migration"
+  - All OpenAI references removed from codebase
+  - cost_meta.model reflects claude-sonnet-4-5
+
+UI Pass 1 (UI_PASS_BRIEF_1.md) ✅ COMPLETE
+  - Answer card visibility tier system: action cluster (Proof details | Advanced
+    verification | View graph) converted from pill buttons to footnote-weight
+    text links at text-zinc-600, reveal on hover. Badge + user_reason unchanged
+    at full prominence (Tier 1). Suggestion chips confirmed gated behind
+    artifact.suggestions.length > 0.
+  - Empty state capability cues: example chips row added below composer in idle
+    state, fading with isActive. 8 chips, clicking populates textarea via
+    existing setQuestion. "Try an example" label in zinc-600.
+    NOTE: Chips were superseded and removed in UI Pass 2 (see below).
+
+UI Pass 2 (UI_FIXES_BRIEF.md) ✅ COMPLETE
+  - Ghost text: after solve, submitted question shows as dimmed placeholder;
+    textarea clears. ghostQuestion state set in doSolve finally block. User
+    types to replace — no deletion required.
+  - Input locked during generation: textarea, Math/Physics tabs, and Interactive
+    bookmark all get disabled={loading} with disabled:opacity-50 cursor styling.
+  - Study mode removed: studyMode state, workspace button, and study flow
+    conditional render block all deleted. Solution sections always render.
+  - Bookmark hitbox fixed: z-index raised from 5/15 to 22/25, ensuring full
+    visual area is above the mode tabs (z-20) and registers clicks correctly.
+  - Example chips replaced with rotating placeholder: EXAMPLE_CHIPS constant
+    removed, chips div removed. MATH_EXAMPLES and PHYSICS_EXAMPLES updated to
+    full problem strings (5 math, 4 physics). Placeholder rotates through them
+    via existing exampleIndex/useEffect cycle. ghostQuestion takes priority.
+
+🔲 Phase 2b — Suggestion Wiring
 Wire suggestion buttons to real actions:
-- `OPEN_MATH_KEYBOARD` → open keyboard UI
-- `RUN_ADVANCED_VERIFICATION` → trigger deeper solve
-- `SHOW_FORMAT_EXAMPLE` → show formatting helper
+  OPEN_MATH_KEYBOARD → open keyboard UI
+  RUN_ADVANCED_VERIFICATION → trigger deeper solve
+  SHOW_FORMAT_EXAMPLE → show formatting helper
 
-### 🔲 Phase 2c — Concept Text Fix
-Replace `getConceptText()` keyword matching with real LLM-generated concept text.
+🔲 Phase 2c — Concept Text Fix
+Replace getConceptText() keyword matching with real LLM-generated concept text.
 Either embed per-section concept explanation in structured solution response,
 or remove "Why this works" button until real content exists.
 
-### 🔲 Phase 3 — Graph
+🔲 Phase 3 — Graph
 Desmos API, auto-detect graphable problems, graph as modal/overlay only.
 
-### 🔲 Phase 4 — Deployment
+🔲 Phase 4 — Deployment
 Vercel (frontend) + Railway/Render (backend), domain, meta/OG tags, env-var API URL.
 
-### 🔲 Phase 5 — Auth & Monetization
+🔲 Phase 5 — Auth & Monetization
 Accounts, free tier limiting, Pro gating, Stripe.
 
-### 🔲 Phase 6 — Interactive Mode (Full)
+🔲 Phase 6 — Interactive Mode (Full)
 Conversational follow-up on solved problems, concept exploration, related examples.
 
-### 🔲 Phase 7 — Analytics
-Verification tier tracking, failure reasons, suggestion usage, conversion funnel, cost-per-solve.
+🔲 Phase 7 — Analytics
+Verification tier tracking, failure reasons, suggestion usage, conversion funnel,
+cost-per-solve.
+```
 
 ---
 
-## 10. Current Code State
+## Section 10 — Current Code State (replace entire section)
 
-### Backend (`/backend`)
-- Express + OpenAI (BEING REPLACED in Phase 2a)
-- `/solve`: working
-- Validation engine: solid (equation substitution, system checks, inequality, numeric, MVP fallbacks)
-- `artifact.js`: badge, certainty, reason_code, user_reason, suggestions
-- Tier 2 normalization: not yet implemented (Phase 2a embeds in solution call)
+```
+10. Current Code State
 
-### Frontend (`/frontend/src/app/page.tsx`)
-- Next.js + Tailwind + KaTeX
-- Geist Sans base, DM Serif Display for wordmark + slogan, JetBrains Mono for proof values
-- Zinc monochrome color system (no blue except badges)
-- Animated input (idle centered → active bottom, 380ms ease-out)
-- Dot pattern background (empty state, fades on solve)
-- Interactive mode bookmark tab (state persists across solves, UI only)
-- Header: Ergo. + profile + plain-lines menu
-- History: workspace top-left placeholder
-- Right rail: removed
-- Suggestion buttons: rendered, not wired (Phase 2b)
-- `getConceptText()`: keyword placeholder (Phase 2c)
-- Graph: placeholder (Phase 3)
+Backend (/backend)
+  - Express + @anthropic-ai/sdk (OpenAI fully removed)
+  - Model: claude-sonnet-4-5 for all solution generation
+  - /solve: working
+  - Validation engine: solid (equation substitution, system checks,
+    inequality, numeric, MVP fallbacks)
+  - artifact.js: badge, certainty, reason_code, user_reason, suggestions
+  - Tier 2 normalization: LIVE — normalized_expression embedded in solution
+    call, returned alongside solution, used for deterministic validation retry
+  - normalizeQuestionForModel(): utility function exists to strip method verbs
+    ("factor", "expand", etc.) from question before model call — carry forward
+    in all future prompt changes
+  - BUILD_VERSION: "v2.0.0-claude-migration"
 
----
+Frontend (/frontend/src/app/page.tsx)
+  - Next.js + Tailwind + KaTeX
+  - Geist Sans base, DM Serif Display for wordmark + slogan,
+    JetBrains Mono for proof values
+  - Zinc monochrome color system (no blue except badges)
+  - Animated input (idle centered → active bottom, 380ms ease-out)
+  - Dot pattern background (empty state, fades on solve)
+  - Interactive mode bookmark tab (state persists across solves, UI only)
+    z-index 22/25 to ensure full hitbox above mode tabs
+  - Header: Ergo. + profile + plain-lines menu
+  - History: workspace top-left placeholder
+  - Right rail: removed
+  - Study mode: removed (state, button, and study flow block all gone)
+  - Ghost text: submitted question persists as placeholder after solve;
+    cleared when user types (ghostQuestion state)
+  - Input locked during loading: textarea + tabs + bookmark disabled={loading}
+  - Textarea placeholder: ghostQuestion (priority) || rotating examples
+  - MATH_EXAMPLES (5) + PHYSICS_EXAMPLES (4): full problem strings, rotate
+    as placeholder at 2500ms interval
+  - Action cluster: footnote-weight text links (zinc-600), not pill buttons
+  - Suggestion chips: gated behind artifact.suggestions.length > 0 only
+  - Suggestion buttons: rendered, not wired (Phase 2b)
+  - "Why this works" (sec.concept): present but content is LLM-returned field
+    from solution schema (Phase 2c if replacement needed)
+  - Graph: placeholder (Phase 3)
+```
 
-## 11. What Claude Code Should Never Do
+## 11a. What Claude Code Should Never Do
 
 - Re-introduce a permanent right rail
 - Collapse or hide procedural solve sections
@@ -305,9 +358,18 @@ Verification tier tracking, failure reasons, suggestion usage, conversion funnel
 - Use Inter or any font other than Geist Sans for UI text
 - Reset `interactiveMode` state on new solves — it persists
 - Use OpenAI after Phase 2a is complete
+- Strategic open questions are logged in STRATEGIC_DECISIONS.md. Do not act on them. Reference only when explicitly asked or when a trigger condition is met.
+- Build for an engineer-in-industry use case. The audience is students in technical
+  programs. See STRATEGIC_DECISIONS.md for full audience decision reasoning.
 
 ---
+## 11b. What Claude Code Must Always Do
 
+- After completing any phase or named task, update CLAUDE.md immediately:
+  mark the phase ✅ complete, add a brief bullet list of what was actually
+  implemented, and update Section 10 (Current Code State) to reflect the
+  new state. Do this before closing the session.
+---
 ## 12. One-Paragraph Product Summary
 
 Ergo. is a trust-first math and physics solver whose differentiator is visible correctness, not just AI output. It serves anyone who needs a correct, verifiable answer — engineers, researchers, advanced students, professionals. The solve experience is a single vertical flow: input → answer → visible verification state → overview → visible procedural sections → optional depth on demand. Radically minimal: no rail, no duplicated controls, no chat feel, no collapsed steps. Deterministic validation (math.js) is the backbone. Normalization is embedded in the solution call at zero extra cost. CAS is gated behind the paid tier ($12/month Pro). The interface feels like an environment — dark, precise, monochrome zinc, DM Serif Display for identity, Geist Sans for everything functional. The business target is 250–300 Pro users for $2,000+/month net, driven by SEO and a free tier conversion funnel.

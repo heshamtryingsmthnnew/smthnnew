@@ -1,0 +1,12 @@
+[ROUTE_ENTRY] q=integrate x^2 * sin(x) dx mode=math
+
+[2026-04-23T16:36:46.095Z] modelQuestion=Solve: x^2 * sin(x) dx | hint=null
+[ROUTE_ENTRY] q=2x + y = 7 and x - y = 1\ mode=math
+
+[2026-04-23T16:38:11.728Z] modelQuestion=2x + y = 7 and x - y = 1\ | hint=null
+[ROUTE_ENTRY] q=x^2 + 5x + 6 = 0 mode=math
+
+[2026-04-23T17:01:58.912Z] modelQuestion=x^2 + 5x + 6 = 0 | hint=null
+[ROUTE_ENTRY] q=2x+y=7 andd x+y=1 mode=math
+
+[2026-04-23T17:55:05.036Z] modelQuestion=2x+y=7 andd x+y=1 | hint=null

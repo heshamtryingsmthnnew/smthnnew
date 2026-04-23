@@ -1388,6 +1388,60 @@ function buildLegacyAnswerFromStructuredSolution(solution) {
   return lines.join('\n').trim();
 }
 
+function normalizeQuestionForModel(question) {
+  return question
+    .replace(
+      /^(please\s+)?(factor|expand|simplify|differentiate|integrate|compute|evaluate|calculate|determine)\b[:\s]*/i,
+      'Solve: '
+    )
+    .trim();
+}
+
+function getDiscriminantHint(normalizedQuestion) {
+  // Matches: [coeff]x^2 [+/-] [coeff]x [+/-] [const] = 0
+  const core = normalizedQuestion.replace(/^Solve:\s*/i, '').trim();
+  const m = core.match(/^([+-]?\d*\.?\d*)\s*x\s*\^\s*2\s*([+-]\s*\d*\.?\d*)\s*x\s*([+-]\s*\d+\.?\d*)\s*=\s*0$/i);
+  if (!m) return null;
+
+  const a = m[1] === '' || m[1] === '+' ? 1 : m[1] === '-' ? -1 : Number(m[1]);
+  const bRaw = m[2].replace(/\s/g, '');
+  const b = bRaw === '+' || bRaw === '' ? 1 : bRaw === '-' ? -1 : Number(bRaw);
+  const c = Number(m[3].replace(/\s/g, ''));
+
+  if (!isFiniteNumber(a) || !isFiniteNumber(b) || !isFiniteNumber(c)) return null;
+
+  const D = b * b - 4 * a * c;
+  const sqrtD = Math.sqrt(Math.abs(D));
+  const isPerfectSquare = D >= 0 && Number.isInteger(sqrtD);
+
+  if (isPerfectSquare) return null;
+
+  if (D < 0) return `Note: D = ${b}²-4(${a})(${c}) = ${D} < 0, no real solutions.`;
+  return `Note: D = ${b}²-4(${a})(${c}) = ${D}. √${D} ≈ ${sqrtD.toFixed(4)} is irrational — use the quadratic formula, do not attempt factoring.`;
+}
+
+function preNormalizeEquation(question) {
+  // Strip leading "Solve: " prefix for processing, reattach after
+  const prefix = /^Solve:\s*/i.test(question) ? 'Solve: ' : '';
+  const core = question.replace(/^Solve:\s*/i, '').trim();
+
+  // Only attempt single-equation inputs
+  const parts = core.split('=');
+  if (parts.length !== 2) return question;
+
+  const lhs = parts[0].trim();
+  const rhs = parts[1].trim();
+
+  if (rhs === '0') return question;
+
+  try {
+    const simplified = math.simplify(`(${lhs})-(${rhs})`).toString();
+    return `${prefix}${simplified} = 0`;
+  } catch {
+    return question;
+  }
+}
+
 app.post('/solve', async (req, res) => {
   const { question, detailLevel, mode } = req.body;
 
@@ -1402,8 +1456,12 @@ app.post('/solve', async (req, res) => {
 
     if (safeMode === 'math') {
   systemPrompt = `You are a precise math and physics solver. You solve problems accurately and return structured JSON only.
-Never include markdown, code fences, or explanation outside the JSON structure.
-Return valid JSON that exactly matches the schema provided.`;
+-Never include markdown, code fences, or explanation outside the JSON structure.
+-Return valid JSON that exactly matches the schema provided.
+-Never round irrational roots. Always express exact answers using sqrt notation or fractions.
+-For any equation, move ALL terms to the left side to get standard form (= 0) first. Verify this rearrangement before solving.
+-When solving a quadratic ax^2+bx+c=0, compute the discriminant D=b^2-4ac first. If D is not a perfect square, you MUST use the quadratic formula. Never guess integer factor pairs without verifying they multiply to c and sum to b exactly.`;
+
     temperature = 0.2;
   } else {
     // ---------- PHYSICS MODE PROMPTS ----------
@@ -1485,6 +1543,8 @@ RULES:
     let normalizedExpression = null;
 
     if (safeMode === 'math') {
+      const modelQuestion = preNormalizeEquation(normalizeQuestionForModel(question));
+      const discriminantHint = getDiscriminantHint(modelQuestion);
       const userPrompt = `Solve the following problem and return a JSON object with this exact structure:
 {
   "final_answer_latex": "final answer in LaTeX notation",
@@ -1500,7 +1560,7 @@ RULES:
   ]
 }
 
-Problem: ${question}
+Problem: ${modelQuestion}${discriminantHint ? `\n${discriminantHint}` : ''}
 Mode: ${safeMode}`;
 
       const message = await client.messages.create({
