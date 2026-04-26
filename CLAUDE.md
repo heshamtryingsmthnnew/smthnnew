@@ -266,16 +266,63 @@ UI Pass 2 (UI_FIXES_BRIEF.md) ✅ COMPLETE
     full problem strings (5 math, 4 physics). Placeholder rotates through them
     via existing exampleIndex/useEffect cycle. ghostQuestion takes priority.
 
-🔲 Phase 2b — Suggestion Wiring
-Wire suggestion buttons to real actions:
-  OPEN_MATH_KEYBOARD → open keyboard UI
-  RUN_ADVANCED_VERIFICATION → trigger deeper solve
-  SHOW_FORMAT_EXAMPLE → show formatting helper
+Phase 2b (PHASE_2B_BRIEF.md) ✅ COMPLETE
+  - Math symbol keyboard: SYMBOL_MAP + KEYBOARD_ROWS constants, mathKeyboardOpen
+    state, insertSymbol() inserts at cursor position. Renders as absolute panel
+    above composer, animates in (kbFadeIn 200ms). Σ button toggles it.
+    OPEN_MATH_KEYBOARD suggestion opens keyboard fully.
+  - Format hint: showFormatHint state, mode-aware before/after examples panel
+    (math: equation notation; physics: include units + what to solve for).
+    Renders above composer alongside keyboard. Resets in doSolve.
+    SHOW_FORMAT_EXAMPLE suggestion shows it.
+  - Advanced verification taste gate: 3 uses/month free (resets on page reload —
+    intentional, Phase 5 enforces server-side). handleAdvancedVerification()
+    checks counter, either runs check or shows Pro gate.
+    runAdvancedVerification() calls /solve with advanced:true, shows secondary
+    badge + method + match/differ result. Emerald = confirmed, amber = differs.
+    Pro upsell gate: emerald CTA button (href="#" placeholder for Phase 5 Stripe).
+    Both action cluster button and RUN_ADVANCED_VERIFICATION suggestion wired.
+  - Backend: /solve reads advanced flag, passes advancedVerificationUsed to
+    buildProblemArtifact, reflected in cost_meta.advanced_verification_used.
+  - artifact.js: structuredSolution now used for both math AND physics (removed
+    mode === "math" guard); advancedVerificationUsed param wired through.
+  - BUILD_VERSION: "v2.2.0-suggestion-wiring"
 
-🔲 Phase 2c — Concept Text Fix
-Replace getConceptText() keyword matching with real LLM-generated concept text.
-Either embed per-section concept explanation in structured solution response,
-or remove "Why this works" button until real content exists.
+Phase 2c (PHASE_2C_BRIEF.md) ✅ COMPLETE
+  - Math system prompt rewritten for student audience: explains reasoning not
+    just mechanics, concept field explicitly instructed to explain *why* in
+    plain language (2–3 sentences), step titles must be descriptive.
+  - Math user prompt: concept field description updated to student-facing
+    instruction.
+  - Physics path migrated from legacy raw-text to structured JSON (mirrors
+    math path): physicsSystemPrompt + physicsUserPrompt defined inline,
+    model call returns JSON parsed into structuredSolution + normalizedExpression.
+    concept field now live for physics. "Why this works" works for both modes.
+  - detailLevel switch deleted entirely (dead code, never wired in frontend).
+  - Physics verification unchanged: still { status: 'unavailable',
+    reason: 'physics_not_supported' }.
+  - BUILD_VERSION: "v2.1.0-prompt-overhaul"
+
+UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
+  - Typo sanitizer: sanitizeCommonTypos() collapses repeated connector words
+    (and/or/with only — math terms untouched). Applied before all processing
+    in /solve. hadTypos flag drives 'input_may_have_typos' reason → PARSER_FAILED.
+  - Prose detection: detectMixedProseInput() flags prose+math mixing. Sets
+    'mixed_prose_input' reason → PARSER_AMBIGUOUS → surfaces OPEN_MATH_KEYBOARD
+    + SHOW_FORMAT_EXAMPLE chips. Does not block solve.
+  - artifact.js: mapVerificationToReasonCode handles 'input_may_have_typos'
+    and 'mixed_prose_input' reason codes (checked before normalizedKind unknown).
+  - Logo click: Ergo. wordmark wrapped in button; onClick resets all state to
+    idle (artifact, question, ghostQuestion, panels, keyboard). No page reload.
+  - KaTeX scaling: final answer at [&_.katex]:text-[1.4em]; section equations
+    at [&_.katex]:text-[1.1em] with left-aligned overflow-x-auto wrapper.
+  - Section titles demoted to label style: text-[13px] font-medium uppercase
+    tracking-[0.12em] text-zinc-400 (was bold 17px heading).
+  - Explanation text: text-[14px] leading-7 text-zinc-300 (was 15px leading-8).
+  - "Why this works" button: state-aware colors (zinc-500 closed / zinc-300
+    open), mt-3 (was mt-4). Concept panel: left-border treatment
+    (border-l border-white/[0.08] bg-white/[0.02]), leading-7 text-zinc-400.
+  - BUILD_VERSION: "v2.5.0-fixes"
 
 🔲 Phase 3 — Graph
 Desmos API, auto-detect graphable problems, graph as modal/overlay only.
@@ -304,7 +351,7 @@ cost-per-solve.
 Backend (/backend)
   - Express + @anthropic-ai/sdk (OpenAI fully removed)
   - Model: claude-sonnet-4-5 for all solution generation
-  - /solve: working
+  - /solve: working; reads mode, ignores detailLevel (removed)
   - Validation engine: solid (equation substitution, system checks,
     inequality, numeric, MVP fallbacks)
   - artifact.js: badge, certainty, reason_code, user_reason, suggestions
@@ -313,7 +360,24 @@ Backend (/backend)
   - normalizeQuestionForModel(): utility function exists to strip method verbs
     ("factor", "expand", etc.) from question before model call — carry forward
     in all future prompt changes
-  - BUILD_VERSION: "v2.0.0-claude-migration"
+  - Math prompt: student-audience system prompt, concept field explicitly
+    instructed to explain *why* in plain language
+  - Physics prompt: structured JSON path, concept field live, mirrors math path.
+    detailLevel switch removed. temperature: 0.3.
+  - Physics verification: unchanged, returns unavailable/physics_not_supported
+  - artifact.js: structuredSolution used for both modes (mode guard removed);
+    advancedVerificationUsed param accepted and written to cost_meta
+  - Verification input priority: normalized_expression is now primary input to
+    verifyMathAnswer; raw input (mathPayload) is fallback only. If model returns
+    no normalized_expression, raw input is sole attempt. normalizedUsed flag
+    reflects which input actually produced the final result.
+  - sanitizeCommonTypos(): collapses repeated connector words (and/or/with) at
+    input entry. hadTypos flag → 'input_may_have_typos' reason on unavailable.
+  - detectMixedProseInput(): heuristic prose+math flag. Sets 'mixed_prose_input'
+    reason on unavailable. Does not block solve.
+  - artifact.js: 'input_may_have_typos' → PARSER_FAILED;
+    'mixed_prose_input' → PARSER_AMBIGUOUS. Both surface correct chips.
+  - BUILD_VERSION: "v2.5.0-fixes"
 
 Frontend (/frontend/src/app/page.tsx)
   - Next.js + Tailwind + KaTeX
@@ -324,7 +388,8 @@ Frontend (/frontend/src/app/page.tsx)
   - Dot pattern background (empty state, fades on solve)
   - Interactive mode bookmark tab (state persists across solves, UI only)
     z-index 22/25 to ensure full hitbox above mode tabs
-  - Header: Ergo. + profile + plain-lines menu
+  - Header: Ergo. wordmark is now a button — onClick resets all state to idle.
+    No page reload. Profile + plain-lines menu unchanged.
   - History: workspace top-left placeholder
   - Right rail: removed
   - Study mode: removed (state, button, and study flow block all gone)
@@ -336,9 +401,16 @@ Frontend (/frontend/src/app/page.tsx)
     as placeholder at 2500ms interval
   - Action cluster: footnote-weight text links (zinc-600), not pill buttons
   - Suggestion chips: gated behind artifact.suggestions.length > 0 only
-  - Suggestion buttons: rendered, not wired (Phase 2b)
-  - "Why this works" (sec.concept): present but content is LLM-returned field
-    from solution schema (Phase 2c if replacement needed)
+  - Math keyboard: symbol overlay, insert at cursor, Σ toggle
+  - Format hint: mode-aware panel, renders above composer on showFormatHint
+  - Advanced verification: taste gate (3/month free), secondary badge on result,
+    Pro upsell gate (href="#" placeholder)
+  - KaTeX scaling: final answer [&_.katex]:text-[1.4em]; section equations
+    [&_.katex]:text-[1.1em]; left-aligned, overflow-x-auto wrapper on sections
+  - Section titles: label style (13px uppercase tracking zinc-400, not bold 17px)
+  - Explanation text: 14px leading-7 zinc-300 (was 15px leading-8 zinc-200)
+  - "Why this works": state-aware colors, mt-3, concept panel left-border
+    (border-l border-white/[0.08] bg-white/[0.02] leading-7 zinc-400)
   - Graph: placeholder (Phase 3)
 ```
 

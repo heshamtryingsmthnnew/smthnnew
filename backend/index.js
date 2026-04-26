@@ -5,7 +5,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { create, all } = require('mathjs');
 const { buildProblemArtifact } = require('./artifact');
 
-const BUILD_VERSION = "v2.0.0-claude-migration";
+const BUILD_VERSION = "v2.5.0-fixes";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -1285,6 +1285,20 @@ function extractMathPayload(question) {
   return { payload: original, kind: "unknown", reason: "no_math_found" };
 }
 
+function stripLatexEnvironments(expr) {
+  if (!expr) return expr;
+  // \begin{cases}...\end{cases} → semicolon-separated equations the verifier can parse
+  const casesMatch = expr.match(/\\begin\{cases\}([\s\S]*?)\\end\{cases\}/);
+  if (casesMatch) {
+    return casesMatch[1]
+      .split(/\\\\/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .join('; ');
+  }
+  return expr;
+}
+
 function extractJsonObject(text) {
   const raw = String(text || '').trim();
   if (!raw) return null;
@@ -1442,12 +1456,32 @@ function preNormalizeEquation(question) {
   }
 }
 
-app.post('/solve', async (req, res) => {
-  const { question, detailLevel, mode } = req.body;
+function sanitizeCommonTypos(input) {
+  return String(input || '')
+    .replace(/\ba+n+d+\b/gi, 'and')
+    .replace(/\bo+r+\b/gi, 'or')
+    .replace(/\bw+i+t+h+\b/gi, 'with')
+    .trim();
+}
 
-  if (!question) {
+function detectMixedProseInput(input) {
+  const hasMath = /[=+\-*/^<>]|sqrt|int|log|sin|cos|tan|\d/.test(input);
+  const hasProseWords = /\b(find|solve|calculate|determine|what is|compute|evaluate|simplify)\b/i.test(input);
+  const wordCount = input.trim().split(/\s+/).length;
+  return hasMath && hasProseWords && wordCount > 4;
+}
+
+app.post('/solve', async (req, res) => {
+  const { question: rawInput, mode, advanced } = req.body;
+  const isAdvanced = advanced === true;
+
+  if (!rawInput) {
     return res.status(400).json({ error: 'No question provided' });
   }
+
+  const question = sanitizeCommonTypos(rawInput);
+  const hadTypos = question !== String(rawInput).trim();
+  const isMixedProse = detectMixedProseInput(question);
 
   const safeMode = mode === 'physics' ? 'physics' : 'math';
 
@@ -1455,86 +1489,22 @@ app.post('/solve', async (req, res) => {
   let temperature;
 
     if (safeMode === 'math') {
-  systemPrompt = `You are a precise math and physics solver. You solve problems accurately and return structured JSON only.
--Never include markdown, code fences, or explanation outside the JSON structure.
--Return valid JSON that exactly matches the schema provided.
--Never round irrational roots. Always express exact answers using sqrt notation or fractions.
--For any equation, move ALL terms to the left side to get standard form (= 0) first. Verify this rearrangement before solving.
--When solving a quadratic ax^2+bx+c=0, compute the discriminant D=b^2-4ac first. If D is not a perfect square, you MUST use the quadratic formula. Never guess integer factor pairs without verifying they multiply to c and sum to b exactly.`;
+      systemPrompt = `You are a precise math solver. Your job is to solve problems correctly and explain each step so a university student can follow the reasoning — not just the mechanics.
 
-    temperature = 0.2;
-  } else {
-    // ---------- PHYSICS MODE PROMPTS ----------
-    switch (detailLevel) {
-      case 'simple':
-        systemPrompt = `
-You are an engineering physics instructor. Explain solutions extremely concisely.
-
-STRUCTURE:
-1. First line: Restate the physical problem in one short sentence. No label.
-2. Second line: Name the main principle or law used (e.g. Newton's second law, work-energy). No label.
-3. Then give 2–4 numbered steps: "Step 1:", "Step 2:", etc.
-   - Each step briefly states the physical reasoning.
-   - Show key equations on their own line in LaTeX using $$...$$.
-4. Final line: ONLY the final numeric or symbolic result in LaTeX, including units where appropriate (e.g. $$a = 2.5\\,\\text{m/s}^2$$).
-
-RULES:
-- Do NOT use markdown (no **bold**, no bullet lists).
-- Do NOT write headings like "Solution", "Approach", or "Final Answer".
-- Keep the explanation minimal but correct.
-- All equations MUST be written in LaTeX.
-- Use $$...$$ for standalone equations and $...$ for inline.
-- Always include units for physical quantities in the final line when possible.
-`;
-        temperature = 0.25;
-        break;
-
-      case 'detailed':
-        systemPrompt = `
-You are an engineering physics professor known for clear, rigorous explanations.
-
-STRUCTURE:
-1. First line: Restate the problem in your own words, focusing on what is being asked. No label.
-2. Second line: Briefly describe the physical model and main principle(s) used (e.g. free-body diagram + Newton's laws, work-energy, momentum, kinematics). No label.
-3. Then provide a sequence of numbered steps: "Step 1:", "Step 2:", etc.
-   - Each step describes the physical reasoning AND shows the corresponding equation in LaTeX on its own line using $$...$$.
-   - Resolve vectors, forces, or components when necessary and show that clearly.
-4. Final line: ONLY the final result in LaTeX, with appropriate units (e.g. $$a = 2.5\\,\\text{m/s}^2$$ or $$T = 12.3\\,\\text{N}$$).
-
-RULES:
-- Do NOT use markdown (no **bold**, no bullet lists, no headings).
-- Do NOT write "Solution", "Explanation", "Final Answer", etc.
-- All physics equations MUST be in LaTeX.
-- Use $$...$$ for block equations and $...$ for inline math where needed.
-- Always include units for the final numeric result if the quantity is physical.
-- Tone: clear, professional, and focused on physical insight plus correct math.
-`;
-        temperature = 0.35;
-        break;
-
-      default:
-        systemPrompt = `
-You are a university-level engineering physics instructor who explains concepts clearly and efficiently.
-
-STRUCTURE:
-1. First line: Restate what the problem is asking in one concise sentence. No label.
-2. Second line: State the main principle(s) you will use (e.g. Newton's laws, kinematics, work-energy). No label.
-3. Then provide a numbered sequence of steps ("Step 1:", "Step 2:", etc.).
-   - Each step combines a short explanation of the physics with the corresponding equation in LaTeX on its own line using $$...$$.
-4. Final line: ONLY the final result in LaTeX, with appropriate units (e.g. $$v = 12.0\\,\\text{m/s}$$).
-
-RULES:
-- Do NOT use markdown, bullet lists, or headings.
-- Do NOT write "Solution:", "Approach:", etc.
-- All equations MUST be LaTeX.
-- Use $$...$$ for block equations, $...$ for inline.
-- Always include units for final physical answers when applicable.
-- Tone: concise, professional, and focused on connecting physics to math.
-`;
-        temperature = 0.3;
-        break;
+Rules:
+- Return valid JSON only. No markdown, no code fences, no text outside the JSON.
+- Never round irrational roots. Use exact form: sqrt(), fractions, or LaTeX notation.
+- For any equation, move ALL terms to one side to get standard form (= 0) before solving.
+- For quadratics: compute the discriminant D = b²-4ac explicitly. If D is not a perfect square, use the quadratic formula — do not guess factor pairs.
+- Titles must describe what is happening in that step (e.g. "Factor the quadratic", "Isolate the variable") — never "Step 1", "Step 2", etc.
+- explanation: what was done in this step and why it moves toward the solution. Write for someone who understands the topic but may not see the move immediately. 2–4 sentences.
+- concept: explain the underlying principle that makes this step valid. Not a definition — explain *why* it works here. Use plain language. Avoid jargon unless you immediately define it. 2–3 sentences.
+- overview: one or two sentences restating the problem and the approach used.
+- normalized_expression: plain math notation only — no LaTeX environments, no \\begin{cases}, no \\text{}. For systems, separate equations with semicolons: "2x + y = 7; x - y = 1". For single equations, write them as-is: "x^2 + 5x + 6 = 0".`;
+      temperature = 0.2;
+    } else {
+      temperature = 0.3;
     }
-  }
 
   try {
     let rawModelOutput = '';
@@ -1548,14 +1518,14 @@ RULES:
       const userPrompt = `Solve the following problem and return a JSON object with this exact structure:
 {
   "final_answer_latex": "final answer in LaTeX notation",
-  "normalized_expression": "clean math expression from the problem, no prose, standard notation",
+  "normalized_expression": "plain math only — no LaTeX environments, no \\text{}, no \\begin{cases}. Systems: semicolon-separated e.g. '2x + y = 7; x - y = 1'. Single equations as-is.",
   "overview": "1-2 sentence problem overview",
   "sections": [
     {
       "title": "descriptive title (not Step 1/2/3)",
       "summary_latex": "key equation for this step in LaTeX",
       "explanation": "what this step does and why",
-      "concept": "underlying mathematical principle, 1-2 sentences"
+      "concept": "why this step is mathematically valid — explain it to a student who knows the mechanics but wants to understand the reasoning, not just the procedure. 2-3 sentences, plain language."
     }
   ]
 }
@@ -1610,16 +1580,83 @@ Mode: ${safeMode}`;
         answer = rawModelOutput;
       }
     } else {
-      // Physics: use legacy prompt via Claude
-      const message = await client.messages.create({
+      // Physics: structured JSON path (mirrors math path)
+      const physicsSystemPrompt = `You are a precise physics solver. Your job is to solve problems correctly and explain each step so a university student can follow both the physical reasoning and the math.
+
+Rules:
+- Return valid JSON only. No markdown, no code fences, no text outside the JSON.
+- Always include units in the final answer.
+- Titles must describe what is happening in that step (e.g. "Apply Newton's Second Law", "Resolve forces into components") — never "Step 1", "Step 2", etc.
+- summary_latex: the key equation for this step, in LaTeX.
+- explanation: what was done in this step, why this principle applies here, and how the math follows from the physics. Write for a student who knows introductory physics but may not see why this step comes next. 2–4 sentences.
+- concept: the underlying physical principle that makes this step valid. Name the law or theorem, then explain in plain language why it applies to this specific situation. Not a textbook definition — connect it to what's actually happening in the problem. 2–3 sentences.
+- overview: one or two sentences identifying what the problem is asking and which physical framework is being used to solve it (e.g. kinematics, Newton's laws, energy conservation, circuit analysis).
+- Never use "Step 1", "Step 2", etc. as titles or in explanations.`;
+
+      const physicsUserPrompt = `Solve the following physics problem and return a JSON object with this exact structure:
+{
+  "final_answer_latex": "final answer in LaTeX notation, with units",
+  "normalized_expression": "the core equation or expression being solved, clean notation, no prose",
+  "overview": "1-2 sentence problem overview identifying the physical framework",
+  "sections": [
+    {
+      "title": "descriptive title for this step (not Step 1/2/3)",
+      "summary_latex": "key equation for this step in LaTeX",
+      "explanation": "what this step does, why this physical principle applies here, and how the math follows from the physics",
+      "concept": "why this principle is valid here — connect it to what is physically happening, not a textbook definition"
+    }
+  ]
+}
+
+Problem: ${question}
+Mode: physics`;
+
+      const physicsMessage = await client.messages.create({
         model: 'claude-sonnet-4-5',
         max_tokens: 2048,
         temperature,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: `Solve this ${safeMode} problem and explain according to your rules:\n\n${question}` }],
+        system: physicsSystemPrompt,
+        messages: [{ role: 'user', content: physicsUserPrompt }],
       });
-      rawModelOutput = message.content[0].text || '';
-      answer = rawModelOutput;
+
+      rawModelOutput = physicsMessage.content[0].text || '';
+
+      console.log('\n=== CLAUDE RAW RESPONSE (PHYSICS) ===');
+      console.log(rawModelOutput);
+      console.log('=== END RAW RESPONSE ===\n');
+
+      try {
+        const parsed = extractJsonObject(rawModelOutput);
+        normalizedExpression = (parsed && typeof parsed.normalized_expression === 'string')
+          ? parsed.normalized_expression.trim()
+          : null;
+
+        if (
+          parsed &&
+          parsed.final_answer_latex &&
+          Array.isArray(parsed.sections) &&
+          parsed.sections.length > 0
+        ) {
+          structuredSolution = {
+            final_answer_latex: parsed.final_answer_latex,
+            overview: parsed.overview || '',
+            sections: parsed.sections.map((sec) => ({
+              title: typeof sec.title === 'string' ? sec.title.trim() : 'Explanation',
+              summary_latex: typeof sec.summary_latex === 'string' ? sec.summary_latex.trim() : '',
+              explanation: typeof sec.explanation === 'string' ? sec.explanation.trim() : '',
+              concept: typeof sec.concept === 'string' ? sec.concept.trim() : '',
+            })).filter(s => s.title || s.summary_latex || s.explanation),
+          };
+          answer = buildLegacyAnswerFromStructuredSolution(structuredSolution);
+          console.log('[PARSE] Physics JSON parsing succeeded.');
+        } else {
+          answer = rawModelOutput;
+          console.log('[PARSE] Physics JSON parsed but missing required fields — fell back to raw.');
+        }
+      } catch (parseErr) {
+        console.warn('[PARSE] Physics JSON parsing failed, fell back to raw. Error:', parseErr.message);
+        answer = rawModelOutput;
+      }
     }
 
     const normalized = extractMathPayload(question);
@@ -1630,21 +1667,40 @@ Mode: ${safeMode}`;
 
     if (safeMode === 'math') {
       try {
-        verification = verifyMathAnswer(mathPayload, answer);
+        // Primary: use model's normalized_expression if available — more reliable than raw input
+        if (normalizedExpression) {
+          const verifierInput = stripLatexEnvironments(normalizedExpression);
+          verification = verifyMathAnswer(verifierInput, answer);
+          normalizedUsed = true;
 
-        // Normalization retry: if raw input fails and we have a normalized_expression, retry with it
-        if (verification.status === 'unavailable' && normalizedExpression) {
-          const retryVerification = verifyMathAnswer(normalizedExpression, answer);
-          if (retryVerification.status !== 'unavailable') {
-            verification = retryVerification;
-            normalizedUsed = true;
+          // Fallback: if normalized_expression also fails, try raw input
+          // Note: if AI normalization failed, regex on raw input is unlikely to succeed —
+          // this is a safety net, not a real recovery path
+          if (verification.status === 'unavailable') {
+            const rawVerification = verifyMathAnswer(mathPayload, answer);
+            if (rawVerification.status !== 'unavailable') {
+              verification = rawVerification;
+              normalizedUsed = false;
+            }
           }
+        } else {
+          // No normalized_expression returned by model — fall back to raw input only
+          verification = verifyMathAnswer(mathPayload, answer);
         }
       } catch (verifyErr) {
         verification = { status: 'unavailable', reason: 'verification_error' };
       }
     } else {
       verification = { status: 'unavailable', reason: 'physics_not_supported' };
+    }
+
+    // Enrich verification reason for input quality issues (math only, unavailable only)
+    if (safeMode === 'math' && verification.status === 'unavailable') {
+      if (isMixedProse) {
+        verification = { ...verification, reason: 'mixed_prose_input' };
+      } else if (hadTypos) {
+        verification = { ...verification, reason: 'input_may_have_typos' };
+      }
     }
 
     // Store normalized_expression in normalized payload
@@ -1663,6 +1719,7 @@ Mode: ${safeMode}`;
       verification,
       llmCalls: 1,
       normalizedUsed,
+      advancedVerificationUsed: isAdvanced,
     });
 
     res.json({

@@ -79,6 +79,18 @@ const PHYSICS_EXAMPLES = [
   'A 2 kg block slides down a 30 degree frictionless ramp. Find velocity at bottom.',
 ];
 
+const KEYBOARD_ROWS = [
+  ['x²', '√x', '∫', 'd/dx', 'π', '∞', '±', '×', '÷'],
+  ['a/b', '(', ')', '≤', '≥', '≠', '|x|', 'log', 'ln'],
+];
+
+const SYMBOL_MAP: Record<string, string> = {
+  'x²': '^2', '√x': 'sqrt()', '∫': 'int()', 'd/dx': 'd/dx(',
+  'π': 'pi', '∞': 'inf', '±': '±', '×': '*', '÷': '/',
+  'a/b': '/', '(': '(', ')': ')', '≤': '<=', '≥': '>=',
+  '≠': '!=', '|x|': 'abs()', 'log': 'log()', 'ln': 'ln()',
+};
+
 function getBadgeLabel(badge: Artifact['verification']['badge']) {
   switch (badge) {
     case 'verified':
@@ -202,6 +214,13 @@ export default function Home() {
   const [interactiveMode, setInteractiveMode] = useState(false);
   const [showFormatHint, setShowFormatHint] = useState(false);
   const [mathKeyboardFlash, setMathKeyboardFlash] = useState(false);
+  const [mathKeyboardOpen, setMathKeyboardOpen] = useState(false);
+  // Phase 5: replace with server-side counter tied to auth session
+  const [advancedVerifUsed, setAdvancedVerifUsed] = useState(0);
+  const ADVANCED_VERIF_FREE_LIMIT = 3;
+  const [advancedVerifLoading, setAdvancedVerifLoading] = useState(false);
+  const [advancedVerifResult, setAdvancedVerifResult] = useState<Artifact['verification'] | null>(null);
+  const [showAdvancedVerifGate, setShowAdvancedVerifGate] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mathKeyboardRef = useRef<HTMLButtonElement>(null);
@@ -230,6 +249,10 @@ export default function Home() {
     setGhostQuestion('');
     setOpenExplainIndex(null);
     setShowProofDetails(false);
+    setAdvancedVerifResult(null);
+    setShowAdvancedVerifGate(false);
+    setShowFormatHint(false);
+    // advancedVerifUsed intentionally not reset — persists across solves
 
     try {
       const res = await axios.post('http://localhost:5000/solve', {
@@ -270,9 +293,52 @@ export default function Home() {
     setTimeout(() => textareaRef.current?.focus(), 400);
   };
 
+  const insertSymbol = (symbol: string) => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart ?? question.length;
+    const end = ta.selectionEnd ?? question.length;
+    const value = SYMBOL_MAP[symbol] ?? symbol;
+    const newQ = question.slice(0, start) + value + question.slice(end);
+    setQuestion(newQ);
+    setTimeout(() => {
+      ta.focus();
+      const newPos = start + value.length;
+      ta.setSelectionRange(newPos, newPos);
+    }, 0);
+  };
+
+  // Phase 5: route to Tier 3 CAS endpoint. Current implementation re-runs same model — result will usually confirm, not audit.
+  const runAdvancedVerification = async () => {
+    if (!artifact || loading) return;
+    setAdvancedVerifLoading(true);
+    try {
+      const res = await axios.post('http://localhost:5000/solve', {
+        question: artifact.original_input,
+        mode: artifact.mode,
+        advanced: true,
+      });
+      setAdvancedVerifResult(res.data.artifact?.verification || null);
+    } catch (err) {
+      console.error('[Advanced Verification]', err);
+    } finally {
+      setAdvancedVerifLoading(false);
+    }
+  };
+
+  const handleAdvancedVerification = () => {
+    if (advancedVerifUsed >= ADVANCED_VERIF_FREE_LIMIT) {
+      setShowAdvancedVerifGate(true);
+    } else {
+      setAdvancedVerifUsed((prev) => prev + 1);
+      runAdvancedVerification();
+    }
+  };
+
   const handleSuggestion = (action: string) => {
     switch (action) {
       case 'OPEN_MATH_KEYBOARD':
+        setMathKeyboardOpen(true);
         scrollToComposer();
         setMathKeyboardFlash(true);
         setTimeout(() => setMathKeyboardFlash(false), 600);
@@ -282,9 +348,7 @@ export default function Home() {
         scrollToComposer();
         break;
       case 'RUN_ADVANCED_VERIFICATION':
-        // Phase 6 — Tier 3 CAS endpoint not yet implemented
-        // Scroll to action cluster as a placeholder acknowledgement
-        composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        handleAdvancedVerification();
         break;
       case 'SIMPLIFY_WORDING':
         scrollToComposer();
@@ -294,6 +358,12 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
+      <style>{`
+        @keyframes kbFadeIn {
+          from { opacity: 0; transform: translateY(8px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
 
       {/* Slogan — fixed, visible in idle state only */}
       <div
@@ -310,7 +380,23 @@ export default function Home() {
 
         {/* Header */}
         <header className="relative z-20 mb-6 flex items-center justify-between border-b border-white/[0.06] bg-zinc-950 pb-4">
-          <h1 className={`${dmSerifDisplay.className} text-3xl tracking-tight text-white`}>Ergo.</h1>
+          <button
+            type="button"
+            onClick={() => {
+              setArtifact(null);
+              setQuestion('');
+              setGhostQuestion('');
+              setOpenExplainIndex(null);
+              setShowProofDetails(false);
+              setAdvancedVerifResult(null);
+              setShowAdvancedVerifGate(false);
+              setShowFormatHint(false);
+              setMathKeyboardOpen(false);
+            }}
+            className="cursor-pointer"
+          >
+            <span className={`${dmSerifDisplay.className} text-3xl tracking-tight text-white`}>Ergo.</span>
+          </button>
 
           <div className="flex items-center gap-2">
             {/* Profile */}
@@ -381,7 +467,7 @@ export default function Home() {
               <div className="rounded-[24px] border border-white/[0.08] bg-white/[0.04] px-6 py-5">
                 <div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Final Answer</div>
 
-                <div className="text-lg sm:text-xl">
+                <div className="my-4 flex justify-center [&_.katex]:text-[1.4em]">
                   <BlockMath math={artifact.solution.final_answer_latex} />
                 </div>
 
@@ -414,9 +500,11 @@ export default function Home() {
                   <span className="text-zinc-800">|</span>
                   <button
                     type="button"
-                    className="transition hover:text-zinc-300"
+                    onClick={handleAdvancedVerification}
+                    disabled={advancedVerifLoading}
+                    className="transition hover:text-zinc-300 disabled:opacity-50"
                   >
-                    Advanced verification
+                    {advancedVerifLoading ? 'Checking...' : 'Advanced verification'}
                   </button>
                   <span className="text-zinc-800">|</span>
                   <button
@@ -426,6 +514,59 @@ export default function Home() {
                     View graph
                   </button>
                 </div>
+
+                {/* Advanced verification result */}
+                {advancedVerifResult && !advancedVerifLoading && (
+                  <div className="mt-4 rounded-[16px] border border-white/[0.08] bg-white/[0.03] px-4 py-3">
+                    <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Advanced check</div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium ${getBadgeClasses(advancedVerifResult.badge)}`}>
+                        {getBadgeLabel(advancedVerifResult.badge)}
+                      </div>
+                      {advancedVerifResult.method && (
+                        <span className="text-xs text-zinc-500">Method: {formatMethodLabel(advancedVerifResult.method)}</span>
+                      )}
+                    </div>
+                    <div className="mt-2 text-xs">
+                      {advancedVerifResult.badge === artifact.verification.badge
+                        ? <span className="text-emerald-400">Confirmed by independent check</span>
+                        : <span className="text-amber-400">Results differ — review your input</span>
+                      }
+                    </div>
+                    <div className="mt-1 text-xs text-zinc-600">
+                      Uses remaining: {Math.max(0, ADVANCED_VERIF_FREE_LIMIT - advancedVerifUsed)} of {ADVANCED_VERIF_FREE_LIMIT}
+                    </div>
+                  </div>
+                )}
+
+                {/* Pro upsell gate */}
+                {showAdvancedVerifGate && (
+                  <div className="mt-4 rounded-[20px] border border-white/[0.1] bg-zinc-900 px-5 py-5">
+                    <div className="text-sm font-medium text-white">Advanced verification</div>
+                    <p className="mt-2 text-sm text-zinc-400">
+                      You&apos;ve used your {ADVANCED_VERIF_FREE_LIMIT} free checks this month.
+                    </p>
+                    <p className="mt-1 text-sm text-zinc-400">
+                      Pro includes unlimited advanced verification, CAS-powered checks, and full solve history.
+                    </p>
+                    <div className="mt-4 flex items-center gap-3">
+                      {/* Phase 5: replace with Stripe checkout URL */}
+                      <a
+                        href="#"
+                        className="rounded-full bg-emerald-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-emerald-500"
+                      >
+                        Upgrade to Pro — $12/month
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => setShowAdvancedVerifGate(false)}
+                        className="text-sm text-zinc-500 transition hover:text-zinc-300"
+                      >
+                        Maybe later
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Suggestions — contextual, failure/parser states only */}
                 {artifact.suggestions.length > 0 && (
@@ -487,29 +628,31 @@ export default function Home() {
 
                   return (
                     <div key={i} className="relative">
-                      <section className={`rounded-[22px] px-4 py-4 transition ${interactiveMode ? 'border-l-2 border-white/[0.15] pl-5' : ''}`}>
-                        <div className="mb-3 text-[17px] font-semibold tracking-tight text-white">
+                      <section className={`rounded-[22px] px-4 py-4 pb-2 transition ${interactiveMode ? 'border-l-2 border-white/[0.15] pl-5' : ''}`}>
+                        <div className="mb-3 text-[13px] font-medium uppercase tracking-[0.12em] text-zinc-400">
                           {sec.title}
                         </div>
 
-                        <div className="mb-4 text-lg">
-                          <BlockMath math={sec.summary_latex} />
+                        <div className="my-3 flex justify-start overflow-x-auto">
+                          <div className="[&_.katex]:text-[1.1em]">
+                            <BlockMath math={sec.summary_latex} />
+                          </div>
                         </div>
 
-                        <p className="max-w-[850px] text-[15px] leading-8 text-zinc-200">
+                        <p className="max-w-[850px] text-[14px] leading-7 text-zinc-300">
                           {sec.explanation}
                         </p>
 
                         <button
                           type="button"
                           onClick={() => setOpenExplainIndex(isOpen ? null : i)}
-                          className="mt-4 text-xs font-medium text-zinc-400 transition hover:text-white"
+                          className={`mt-3 text-xs font-medium transition ${isOpen ? 'text-zinc-300' : 'text-zinc-500 hover:text-zinc-300'}`}
                         >
                           {isOpen ? 'Hide underlying principle' : 'Why this works'}
                         </button>
 
                         {isOpen && (
-                          <div className="mt-4 rounded-[18px] border border-white/8 bg-white/[0.03] px-4 py-4 text-sm leading-8 text-zinc-300">
+                          <div className="mt-3 rounded-r-[14px] border-l border-white/[0.08] bg-white/[0.02] py-3 pl-4 pr-4 text-sm leading-7 text-zinc-400">
                             {sec.concept || 'No concept explanation available for this step.'}
                           </div>
                         )}
@@ -546,6 +689,66 @@ export default function Home() {
           transition: 'all 380ms ease-out',
         }}
       >
+        {/* Keyboard + format hint — absolute, stacked above the composer box */}
+        {(mathKeyboardOpen || (showFormatHint && isActive)) && (
+          <div className="absolute bottom-full left-0 right-0 mb-2 flex flex-col gap-2">
+            {mathKeyboardOpen && (
+              <div className="rounded-[18px] border border-white/[0.08] bg-zinc-900 px-4 py-3" style={{ animation: 'kbFadeIn 200ms ease-out' }}>
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-[10px] uppercase tracking-widest text-zinc-500">Symbols</span>
+                  <button type="button" onClick={() => setMathKeyboardOpen(false)} className="text-zinc-500 transition hover:text-zinc-300">×</button>
+                </div>
+                {KEYBOARD_ROWS.map((row, ri) => (
+                  <div key={ri} className={`flex flex-wrap gap-1${ri > 0 ? ' mt-1' : ''}`}>
+                    {row.map((sym) => (
+                      <button
+                        key={sym}
+                        type="button"
+                        onClick={() => insertSymbol(sym)}
+                        className={`rounded-[10px] px-3 py-2 font-mono text-sm transition hover:bg-white/[0.06] hover:text-white ${jetbrainsMono.className} text-zinc-300`}
+                      >
+                        {sym}
+                      </button>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {showFormatHint && isActive && (
+              <div className="rounded-[18px] border border-white/[0.08] bg-zinc-900 px-4 py-3" style={{ animation: 'kbFadeIn 200ms ease-out' }}>
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="text-[10px] uppercase tracking-[0.16em] text-zinc-500">Formatting guide</span>
+                  <button type="button" onClick={() => setShowFormatHint(false)} className="text-zinc-500 transition hover:text-zinc-300">×</button>
+                </div>
+                {mode === 'math' ? (
+                  <div className="space-y-2 text-xs">
+                    <div className="flex gap-3">
+                      <span className={`${jetbrainsMono.className} text-zinc-500`}>x squared plus 5x plus 6 equals 0</span>
+                      <span className="text-zinc-600">→</span>
+                      <span className={`${jetbrainsMono.className} text-zinc-200`}>x^2 + 5x + 6 = 0</span>
+                    </div>
+                    <div className="flex gap-3">
+                      <span className={`${jetbrainsMono.className} text-zinc-500`}>the integral of x squared</span>
+                      <span className="text-zinc-600">→</span>
+                      <span className={`${jetbrainsMono.className} text-zinc-200`}>integrate x^2 dx</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2 text-xs">
+                    <div className="flex gap-3">
+                      <span className={`${jetbrainsMono.className} text-zinc-500`}>find how fast the ball is going</span>
+                      <span className="text-zinc-600">→</span>
+                      <span className={`${jetbrainsMono.className} text-zinc-200`}>A 2 kg ball dropped from 10 m. Find velocity at impact.</span>
+                    </div>
+                    <p className="mt-2 text-zinc-500">Include: known values with units, what you&apos;re solving for.</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Left: Mode tabs / Right: Interactive bookmark — both relative to composer */}
         <div className="relative mb-0">
           {/* Mode tabs — z-20, sit on top */}
@@ -633,14 +836,6 @@ export default function Home() {
               </div>
             )}
 
-            {/* Format hint — shown when SHOW_FORMAT_EXAMPLE suggestion is triggered */}
-            {showFormatHint && (
-              <div className="mx-5 mt-3 flex items-start justify-between gap-3 rounded-[14px] border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-xs text-zinc-400">
-                <span>Format tip: write equations in standard notation, e.g. <span className="text-zinc-200">2x + 3 = 7</span> or <span className="text-zinc-200">x^2 - 4 = 0</span>. Avoid prose like "solve two x plus three equals seven."</span>
-                <button type="button" onClick={() => setShowFormatHint(false)} className="shrink-0 text-zinc-600 hover:text-zinc-300">×</button>
-              </div>
-            )}
-
             {/* Textarea */}
             <textarea
               ref={textareaRef}
@@ -680,10 +875,13 @@ export default function Home() {
                   <button
                     ref={mathKeyboardRef}
                     type="button"
+                    onClick={() => setMathKeyboardOpen((v) => !v)}
                     className={`flex h-8 w-8 items-center justify-center rounded-full text-sm transition ${
-                      mathKeyboardFlash
-                        ? 'bg-white/[0.12] text-white'
-                        : 'text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200'
+                      mathKeyboardOpen
+                        ? 'bg-white/[0.10] text-white'
+                        : mathKeyboardFlash
+                          ? 'bg-white/[0.12] text-white'
+                          : 'text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200'
                     }`}
                     title="Open math keyboard"
                   >

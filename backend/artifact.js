@@ -251,6 +251,14 @@ function mapVerificationToReasonCode(verification, mode, normalizedKind) {
     return "UNSUPPORTED_PROBLEM_TYPE";
   }
 
+  if (verification.reason === "input_may_have_typos") {
+    return "PARSER_FAILED";
+  }
+
+  if (verification.reason === "mixed_prose_input") {
+    return "PARSER_AMBIGUOUS";
+  }
+
   if (normalizedKind === "unknown") {
     return "PARSER_FAILED";
   }
@@ -366,6 +374,7 @@ function buildProblemArtifact({
   verification,
   llmCalls = 1,
   normalizedUsed = false,
+  advancedVerificationUsed = false,
 }) {
   const badge = mapVerificationToBadge(
   verification,
@@ -398,10 +407,11 @@ const certainty = mapVerificationToCertainty(
   const { intro, sections: legacySections } = extractIntroAndSections(answer);
 
   const solution =
-    mode === "math" &&
     structuredSolution &&
     typeof structuredSolution.final_answer_latex === "string" &&
-    Array.isArray(structuredSolution.sections)
+    structuredSolution.final_answer_latex.length > 0 &&
+    Array.isArray(structuredSolution.sections) &&
+    structuredSolution.sections.length > 0
       ? {
           final_answer_latex: structuredSolution.final_answer_latex || "",
           overview: structuredSolution.overview || "",
@@ -467,7 +477,7 @@ const certainty = mapVerificationToCertainty(
       llm_calls: llmCalls,
       model: 'claude-sonnet-4-5',
       normalized_used: normalizedUsed,
-      advanced_verification_used: false,
+      advanced_verification_used: advancedVerificationUsed,
       cas_used: false,
     },
   };
