@@ -13,7 +13,9 @@
       "Bash(curl -s -X POST http://localhost:5000/solve -H \"Content-Type: application/json\" -d \"{\\\\\"question\\\\\":\\\\\"2x + 3 = 7\\\\\",\\\\\"mode\\\\\":\\\\\"math\\\\\"}\")",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); a=d.get\\('artifact',{}\\); print\\('version:', a.get\\('build_version'\\)\\); print\\('badge:', a.get\\('verification',{}\\).get\\('badge'\\)\\); print\\('reason:', a.get\\('verification',{}\\).get\\('user_reason'\\)\\)\")",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d.get\\('artifact',{}\\).get\\('build_version'\\), indent=2\\)\\)\")",
-      "Bash(python -c \"import sys,json; print\\(json.load\\(sys.stdin\\).get\\('artifact',{}\\).get\\('build_version','missing'\\)\\)\")"
+      "Bash(python -c \"import sys,json; print\\(json.load\\(sys.stdin\\).get\\('artifact',{}\\).get\\('build_version','missing'\\)\\)\")",
+      "Bash(netstat -ano)",
+      "Bash(npm run *)"
     ]
   }
 }

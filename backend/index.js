@@ -4,8 +4,11 @@ const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
 const { create, all } = require('mathjs');
 const { buildProblemArtifact } = require('./artifact');
+const { queryWolfram } = require('./wolfram');
+const { runPhysicsAudit } = require('./physicsAudit');
 
-const BUILD_VERSION = "v2.5.0-fixes";
+const BUILD_VERSION = "v3.2.1-fixes";
+const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -955,6 +958,29 @@ function verifyEquationSolutionBySubstitution(question, aiAnswerText) {
 }
 
 /**
+ * Direct numeric equality check: evaluates both sides of "lhs = rhs" with math.js.
+ * Returns validated/failed when both sides are fully numeric (no free variables).
+ * Returns null when math.js throws (free variables present — fall through to other methods).
+ */
+function verifyDirectEquality(question) {
+  const parts = question.split('=');
+  if (parts.length !== 2) return null;
+  const lhs = latexToMathjsMVP(parts[0].trim());
+  const rhs = latexToMathjsMVP(parts[1].trim());
+  try {
+    const lhsVal = math.evaluate(lhs);
+    const rhsVal = math.evaluate(rhs);
+    if (!isFiniteNumber(lhsVal) || !isFiniteNumber(rhsVal)) return null;
+    const residual = Math.abs(lhsVal - rhsVal);
+    return residual < 1e-10
+      ? { status: 'validated', meta: { type: 'numeric-expression', lhsVal, rhsVal, residual } }
+      : { status: 'failed', meta: { type: 'numeric-expression', lhsVal, rhsVal, residual } };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Math-mode verification:
  * 1) Try system-of-equations (>= 2 "=" signs).
  * 2) Try inequalities.
@@ -964,8 +990,14 @@ function verifyEquationSolutionBySubstitution(question, aiAnswerText) {
 function verifyMathAnswer(question, aiAnswerText) {
   if (!question) return { status: "unavailable" };
 
-  // Systems check first
+  // Fast path: single equation where both sides are fully numeric (e.g. sin(pi/4) = sqrt(2)/2)
   const eqCount = (question.match(/=/g) || []).length;
+  if (eqCount === 1) {
+    const direct = verifyDirectEquality(question);
+    if (direct) return direct;
+  }
+
+  // Systems check first
   if (eqCount >= 2) {
     const sys = verifySystemOfEquations(question, aiAnswerText);
     if (sys && sys.status !== "unavailable") return sys;
@@ -1405,8 +1437,8 @@ function buildLegacyAnswerFromStructuredSolution(solution) {
 function normalizeQuestionForModel(question) {
   return question
     .replace(
-      /^(please\s+)?(factor|expand|simplify|differentiate|integrate|compute|evaluate|calculate|determine)\b[:\s]*/i,
-      'Solve: '
+      /^(please\s+|can you\s+|could you\s+|help me\s+|i need\s+|what is\s+|what are\s+|tell me\s+|give me\s+)+/i,
+      ''
     )
     .trim();
 }
@@ -1464,7 +1496,24 @@ function sanitizeCommonTypos(input) {
     .trim();
 }
 
+const MATH_INSTRUCTION_PHRASES = [
+  'find the eigenvalues', 'find the eigenvectors', 'find the inverse',
+  'find the determinant', 'find the limit', 'find the roots', 'find the derivative',
+  'find the integral', 'find the range', 'find the domain', 'find the zeros',
+  'find the', 'compute the', 'calculate the', 'evaluate the',
+  'solve for', 'factor', 'expand', 'simplify', 'differentiate', 'integrate',
+  'minimize', 'maximize', 'optimize', 'prove', 'verify', 'show that',
+  'determine', 'identify',
+];
+
 function detectMixedProseInput(input) {
+  const lower = input.trim().toLowerCase();
+
+  // Exempt recognized math instruction phrases — these are commands, not filler
+  if (MATH_INSTRUCTION_PHRASES.some((phrase) => lower.startsWith(phrase))) {
+    return false;
+  }
+
   const hasMath = /[=+\-*/^<>]|sqrt|int|log|sin|cos|tan|\d/.test(input);
   const hasProseWords = /\b(find|solve|calculate|determine|what is|compute|evaluate|simplify)\b/i.test(input);
   const wordCount = input.trim().split(/\s+/).length;
@@ -1489,18 +1538,20 @@ app.post('/solve', async (req, res) => {
   let temperature;
 
     if (safeMode === 'math') {
-      systemPrompt = `You are a precise math solver. Your job is to solve problems correctly and explain each step so a university student can follow the reasoning — not just the mechanics.
+      systemPrompt = `You are a precise math solver. Your output is read by advanced undergrad and graduate students who are technically literate — they know the mechanics, they want the reasoning made explicit, not explained from scratch.
 
 Rules:
 - Return valid JSON only. No markdown, no code fences, no text outside the JSON.
 - Never round irrational roots. Use exact form: sqrt(), fractions, or LaTeX notation.
 - For any equation, move ALL terms to one side to get standard form (= 0) before solving.
 - For quadratics: compute the discriminant D = b²-4ac explicitly. If D is not a perfect square, use the quadratic formula — do not guess factor pairs.
-- Titles must describe what is happening in that step (e.g. "Factor the quadratic", "Isolate the variable") — never "Step 1", "Step 2", etc.
-- explanation: what was done in this step and why it moves toward the solution. Write for someone who understands the topic but may not see the move immediately. 2–4 sentences.
-- concept: explain the underlying principle that makes this step valid. Not a definition — explain *why* it works here. Use plain language. Avoid jargon unless you immediately define it. 2–3 sentences.
-- overview: one or two sentences restating the problem and the approach used.
-- normalized_expression: plain math notation only — no LaTeX environments, no \\begin{cases}, no \\text{}. For systems, separate equations with semicolons: "2x + y = 7; x - y = 1". For single equations, write them as-is: "x^2 + 5x + 6 = 0".`;
+- Titles must name the operation precisely (e.g. "Factor the quadratic expression", "Apply the quadratic formula", "Isolate x") — never "Step 1", "Step 2", etc.
+- explanation: state what was done and why it follows from the previous step. Assume the student knows the procedure — the explanation should justify the move, not describe it. 2–3 sentences, dense.
+- concept: name the theorem, property, or algebraic principle that licenses this step, then state why it applies here. No definitions. No scaffolding. Connect it directly to the problem. 1–2 sentences.
+- overview: one sentence identifying the problem type and the method used to solve it.
+- normalized_expression: plain math notation only — no LaTeX environments, no \\begin{cases}, no \\text{}. For systems, separate with semicolons: "2x + y = 7; x - y = 1". Single equations as-is.
+- graphable: true if the problem involves a plottable function, curve, or inequality, or if a graph would reveal something structurally meaningful about the result (roots, shape, solution region). Otherwise false.
+- graph_expression: if graphable, a single Desmos-ready expression string (e.g. "y=x^2-5x+6"). Empty string if not graphable.`;
       temperature = 0.2;
     } else {
       temperature = 0.3;
@@ -1519,13 +1570,15 @@ Rules:
 {
   "final_answer_latex": "final answer in LaTeX notation",
   "normalized_expression": "plain math only — no LaTeX environments, no \\text{}, no \\begin{cases}. Systems: semicolon-separated e.g. '2x + y = 7; x - y = 1'. Single equations as-is.",
-  "overview": "1-2 sentence problem overview",
+  "graphable": false,
+  "graph_expression": "",
+  "overview": "one sentence — problem type and method",
   "sections": [
     {
-      "title": "descriptive title (not Step 1/2/3)",
+      "title": "precise operation name (not Step 1/2/3)",
       "summary_latex": "key equation for this step in LaTeX",
-      "explanation": "what this step does and why",
-      "concept": "why this step is mathematically valid — explain it to a student who knows the mechanics but wants to understand the reasoning, not just the procedure. 2-3 sentences, plain language."
+      "explanation": "what was done and why it follows — justify the move, not describe it. 2–3 sentences.",
+      "concept": "theorem or property that licenses this step, applied directly to this problem. 1–2 sentences."
     }
   ]
 }
@@ -1569,6 +1622,8 @@ Mode: ${safeMode}`;
           })).filter(s => s.title || s.summary_latex || s.explanation);
 
           structuredSolution = normalizedSolution;
+          structuredSolution.graphable = parsed?.graphable === true;
+          structuredSolution.graph_expression = typeof parsed?.graph_expression === 'string' ? parsed.graph_expression.trim() : '';
           answer = buildLegacyAnswerFromStructuredSolution(structuredSolution);
           console.log('[PARSE] JSON parsing succeeded. normalized_expression:', normalizedExpression);
         } else {
@@ -1581,29 +1636,34 @@ Mode: ${safeMode}`;
       }
     } else {
       // Physics: structured JSON path (mirrors math path)
-      const physicsSystemPrompt = `You are a precise physics solver. Your job is to solve problems correctly and explain each step so a university student can follow both the physical reasoning and the math.
+      const physicsSystemPrompt = `You are a precise physics solver. Your output is read by advanced undergrad and graduate students who know introductory physics — they understand the principles, they want to see how the framework is applied, not have it explained from first principles.
 
 Rules:
 - Return valid JSON only. No markdown, no code fences, no text outside the JSON.
-- Always include units in the final answer.
-- Titles must describe what is happening in that step (e.g. "Apply Newton's Second Law", "Resolve forces into components") — never "Step 1", "Step 2", etc.
-- summary_latex: the key equation for this step, in LaTeX.
-- explanation: what was done in this step, why this principle applies here, and how the math follows from the physics. Write for a student who knows introductory physics but may not see why this step comes next. 2–4 sentences.
-- concept: the underlying physical principle that makes this step valid. Name the law or theorem, then explain in plain language why it applies to this specific situation. Not a textbook definition — connect it to what's actually happening in the problem. 2–3 sentences.
-- overview: one or two sentences identifying what the problem is asking and which physical framework is being used to solve it (e.g. kinematics, Newton's laws, energy conservation, circuit analysis).
-- Never use "Step 1", "Step 2", etc. as titles or in explanations.`;
+- Always include units in the final answer and in any intermediate results where units matter.
+- Titles must name the physical operation precisely (e.g. "Apply conservation of energy", "Resolve into components", "Apply impulse-momentum theorem") — never "Step 1", "Step 2", etc.
+- summary_latex: the governing equation for this step in LaTeX, with variables defined inline if non-standard.
+- explanation: state what was done, which physical constraint or conservation law drives it, and how the algebra follows. Write for someone who can set up the problem themselves — justify the approach, don't walk through it. 2–3 sentences.
+- concept: name the law or principle, then state precisely why it applies to this configuration — not a general statement, a specific one. 1–2 sentences.
+- overview: one sentence identifying the physical system, the quantity being solved for, and the framework used.
+- normalized_expression: the core governing equation in plain notation, no LaTeX environments.
+- graphable: true if the problem involves a quantity that varies over a parameter (time, position, angle) and a graph would reveal something physically meaningful (trajectory, velocity profile, force curve). Otherwise false.
+- graph_expression: if graphable, a single Desmos-ready expression string. Empty string if not graphable.
+- Never use "Step 1", "Step 2", etc. in titles or explanations.`;
 
       const physicsUserPrompt = `Solve the following physics problem and return a JSON object with this exact structure:
 {
   "final_answer_latex": "final answer in LaTeX notation, with units",
-  "normalized_expression": "the core equation or expression being solved, clean notation, no prose",
-  "overview": "1-2 sentence problem overview identifying the physical framework",
+  "normalized_expression": "the core governing equation in plain notation",
+  "graphable": false,
+  "graph_expression": "",
+  "overview": "one sentence — physical system, quantity being solved, framework used",
   "sections": [
     {
-      "title": "descriptive title for this step (not Step 1/2/3)",
-      "summary_latex": "key equation for this step in LaTeX",
-      "explanation": "what this step does, why this physical principle applies here, and how the math follows from the physics",
-      "concept": "why this principle is valid here — connect it to what is physically happening, not a textbook definition"
+      "title": "precise physical operation (not Step 1/2/3)",
+      "summary_latex": "governing equation for this step in LaTeX",
+      "explanation": "what was done, which law or constraint drives it, how the math follows. 2–3 sentences.",
+      "concept": "the law or principle and why it applies to this specific configuration. 1–2 sentences."
     }
   ]
 }
@@ -1646,6 +1706,8 @@ Mode: physics`;
               explanation: typeof sec.explanation === 'string' ? sec.explanation.trim() : '',
               concept: typeof sec.concept === 'string' ? sec.concept.trim() : '',
             })).filter(s => s.title || s.summary_latex || s.explanation),
+            graphable: parsed.graphable === true,
+            graph_expression: typeof parsed.graph_expression === 'string' ? parsed.graph_expression.trim() : '',
           };
           answer = buildLegacyAnswerFromStructuredSolution(structuredSolution);
           console.log('[PARSE] Physics JSON parsing succeeded.');
@@ -1709,6 +1771,43 @@ Mode: physics`;
       payload: normalizedExpression || normalized.payload,
     };
 
+    // Advanced verification: Wolfram CAS for math, AI audit for physics
+    let casResult = null;
+    let auditResult = null;
+
+    if (isAdvanced) {
+      if (safeMode === 'math') {
+        const expression = structuredSolution.final_answer_latex || answer;
+        console.log('[CAS] Querying Wolfram Alpha for:', expression);
+        const wolframResult = await queryWolfram(expression);
+        console.log('[CAS] Wolfram result:', wolframResult.result);
+
+        let verdict = 'unavailable';
+        if (wolframResult.success && wolframResult.result) {
+          // Loose comparison: normalize whitespace, strip LaTeX delimiters
+          const normalize = (s) =>
+            String(s || '').replace(/\s+/g, ' ').replace(/\\[a-zA-Z]+/g, '').replace(/[{}]/g, '').trim().toLowerCase();
+          const wNorm = normalize(wolframResult.result);
+          const aNorm = normalize(expression);
+          verdict = wNorm && aNorm && (wNorm === aNorm || wNorm.includes(aNorm) || aNorm.includes(wNorm))
+            ? 'confirmed'
+            : 'discrepancy';
+        }
+
+        casResult = {
+          verdict,
+          wolfram_result: wolframResult.result || null,
+          expression_checked: expression,
+        };
+      } else {
+        // Physics: AI audit via different method
+        console.log('[Audit] Running physics audit...');
+        const auditRaw = await runPhysicsAudit(question, structuredSolution);
+        auditResult = auditRaw;
+        console.log('[Audit] Result:', auditResult.agrees, auditResult.method);
+      }
+    }
+
     const artifact = buildProblemArtifact({
       question,
       mode: safeMode,
@@ -1720,6 +1819,8 @@ Mode: physics`;
       llmCalls: 1,
       normalizedUsed,
       advancedVerificationUsed: isAdvanced,
+      casResult,
+      auditResult,
     });
 
     res.json({

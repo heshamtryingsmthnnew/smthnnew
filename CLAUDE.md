@@ -174,8 +174,20 @@ Stored in artifact, used for deterministic validation retry if raw input fails p
 ### Tier 3 — CAS / Advanced Verification (User-Invoked, Paid)
 Triggered by "Advanced verification" button. Gated behind Pro tier.
 
-### Hard Rule
-NO "AI checks AI" for correctness. Deterministic is always the correctness authority.
+### Hard Rule — "No AI Checks AI" Scope
+
+This prohibition applies specifically to math correctness verification.
+AI must never be used to confirm whether a math answer is correct —
+deterministic validation (Tier 1 math.js, Tier 3 CAS) is the only
+correctness authority for math.
+
+Physics is exempt from this rule for the following reason: the physics
+problem space is too broad for deterministic validation. For physics,
+a second AI call solving via a genuinely different method (different
+physical framework or approach) constitutes a legitimate audit — not
+a correctness check. The two calls are independent. Disagreement
+between them is a real signal. Agreement is weak confirmation, not proof.
+The audit result is always labeled as an audit, never as verification.
 
 ---
 
@@ -324,8 +336,98 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     (border-l border-white/[0.08] bg-white/[0.02]), leading-7 text-zinc-400.
   - BUILD_VERSION: "v2.5.0-fixes"
 
-🔲 Phase 3 — Graph
-Desmos API, auto-detect graphable problems, graph as modal/overlay only.
+✅ Phase 3 — Graph ✅ COMPLETE
+  - Math and physics system/user prompts extended: model now returns `graphable: boolean`
+    and `graph_expression: string` (Desmos-ready) alongside the solution JSON.
+  - `artifact.js`: extracts `graphable`/`graph_expression` from `structuredSolution`,
+    applies guard (if expression empty but graphable true → force false), writes
+    `graph: { graphable, expression }` to the artifact.
+  - Frontend: `Artifact` type updated with `graph?: { graphable, expression }`.
+  - `showGraph` state added (boolean, false); reset in `doSolve` and logo click.
+  - "View graph" in action cluster renders only when `artifact.graph?.graphable === true`;
+    completely hidden otherwise.
+  - Graph modal: fixed `z-50 bg-zinc-950/90 backdrop-blur-sm` overlay, centered
+    `max-w-2xl` container, close on backdrop click or × button, "Graph" zinc-500 label,
+    Desmos embed at `h-[480px]`, "Open in Desmos ↗" text link bottom-right.
+  - Desmos embed API loaded via script tag (apiKey: dcb31709b452b1cf9dc26972add0fae6).
+    Calculator initialized on modal open with `expressions: false, keypad: false,
+    settingsMenu: false, zoomButtons: true`. Expression set via `setExpression`.
+  - BUILD_VERSION: "v3.0.0-graph"
+
+✅ Phase 3b — CAS Verification + Physics Audit ✅ COMPLETE
+  - CLAUDE.md Section 6 Hard Rule clarified: "no AI checks AI" scoped to math
+    correctness only; physics AI audit explicitly permitted as independent method.
+  - backend/wolfram.js: queries Wolfram Full Results API with the expression,
+    extracts Result pod plaintext, returns { success, result, raw }. Uses native
+    fetch. No new dependencies.
+  - backend/physicsAudit.js: second Claude call (claude-sonnet-4-5, temp 0.3)
+    instructed to solve via different physical method. Returns { agrees,
+    audit_answer, method, confidence, note, dimensional }. Lightweight unit-presence
+    regex check on final_answer_latex for dimensional analysis.
+  - backend/index.js: when advanced:true — math path calls wolfram.js, loose
+    string comparison determines verdict (confirmed/discrepancy/unavailable);
+    physics path calls physicsAudit.js. Results passed to buildProblemArtifact
+    under casResult / auditResult.
+  - artifact.js: buildProblemArtifact accepts casResult + auditResult. Writes
+    cas: { verdict, wolfram_result, expression_checked, used } and audit:
+    { verdict, audit_answer, method, confidence, note, dimensional, used }.
+    cost_meta now includes cas_used and audit_used booleans.
+  - Frontend: Artifact type updated with cas and audit fields. advancedVerifResult
+    state now holds full Artifact (not just verification). Math advanced panel
+    shows Wolfram verdict: emerald "Confirmed by Wolfram Alpha", amber
+    "Wolfram Alpha returned a different result" + result in JetBrains Mono,
+    zinc "Wolfram Alpha could not evaluate this expression". Physics advanced
+    panel labeled "AUDIT" (not "ADVANCED CHECK"), shows consistent/inconsistent
+    + method + dimensional analysis line. Never uses "Verified" for physics.
+  - BUILD_VERSION: "v3.1.0-cas"
+
+✅ Prompt Rewrite (PROMPT_REWRITE.md) ✅ COMPLETE
+  - Math system prompt: audience reframed to technically literate grad/advanced
+    undergrad — "justify the move, don't describe it." explanation 2–3 sentences
+    dense; concept 1–2 sentences naming the principle and applying it directly,
+    no definitions, no scaffolding. overview shortened to one sentence.
+  - Math user prompt: JSON field descriptions updated to match new register.
+    graphable/graph_expression defaults now shown as false/"" in schema.
+  - Physics system prompt: same audience reframe. explanation "justify the
+    approach, don't walk through it." concept "name the law, state why it
+    applies to this specific configuration." overview one sentence.
+  - Physics user prompt: JSON field descriptions updated to match. Same
+    structural defaults as math.
+  - No logic, variable names, JSON parsing, or verification code changed.
+  - BUILD_VERSION: "v3.2.0-prompts"
+
+✅ Fix Brief 01 — 7 post-Phase-3b bug fixes ✅ COMPLETE
+  - FIX 1: normalizeQuestionForModel() rewritten to strip ONLY conversational
+    filler (please, can you, could you, help me, i need, what is, tell me,
+    give me). All math operation verbs (differentiate, integrate, factor,
+    expand, simplify, etc.) pass through unchanged. "differentiate x^3 * ln(x)"
+    now reaches the model with the verb intact.
+  - FIX 2: wolfram.js — stripLatexForWolfram() added. Converts \frac, \sqrt,
+    removes \text{}, \left, \right, \quad, \implies, converts \cdot → *.
+    Applied to final_answer_latex before every Wolfram API call. Logs both
+    raw and stripped expression in dev mode.
+  - FIX 3: Desmos setExpression now called with 100ms delay after
+    GraphingCalculator init, ensuring Desmos internal state is ready before
+    the expression is set.
+  - FIX 4: artifact.js — physics badge overridden post-audit: when
+    auditResult.used === true, badge → "checked", method → "cross_method_audit",
+    user_reason reflects agrees/disagrees. Without audit: user_reason →
+    "Use Cross-Method Audit for an independent check." Old "not available for
+    physics" string removed entirely.
+  - FIX 5: Frontend — certainty dot suppressed when badge === "checked".
+    Only shown for "verified" and "discrepancy". checked badge user_reason →
+    "Deterministic verification not available for this problem type. Use
+    Advanced Verification for a deeper check."
+  - FIX 6: detectMixedProseInput() — MATH_INSTRUCTION_PHRASES exemption list
+    added (find the eigenvalues, differentiate, integrate, factor, etc.).
+    Inputs starting with recognized math instruction phrases never flagged as
+    mixed prose.
+  - FIX 7: verifyDirectEquality() added — for single-equation inputs where
+    both sides are fully numeric (no free variables), evaluates both sides with
+    math.js and compares with 1e-10 tolerance. Called as fast path in
+    verifyMathAnswer(). Covers sin(pi/4) = sqrt(2)/2, cos(0) = 1, 2^8 = 256,
+    and all pure trig/numeric evaluations previously returning VALIDATION_INCONCLUSIVE.
+  - BUILD_VERSION: "v3.2.1-fixes"
 
 🔲 Phase 4 — Deployment
 Vercel (frontend) + Railway/Render (backend), domain, meta/OG tags, env-var API URL.
@@ -373,11 +475,47 @@ Backend (/backend)
     reflects which input actually produced the final result.
   - sanitizeCommonTypos(): collapses repeated connector words (and/or/with) at
     input entry. hadTypos flag → 'input_may_have_typos' reason on unavailable.
-  - detectMixedProseInput(): heuristic prose+math flag. Sets 'mixed_prose_input'
-    reason on unavailable. Does not block solve.
+  - detectMixedProseInput(): heuristic prose+math flag. MATH_INSTRUCTION_PHRASES
+    exemption list prevents false positives on valid math instructions (find the
+    eigenvalues, differentiate, integrate, etc.). Does not block solve.
   - artifact.js: 'input_may_have_typos' → PARSER_FAILED;
     'mixed_prose_input' → PARSER_AMBIGUOUS. Both surface correct chips.
-  - BUILD_VERSION: "v2.5.0-fixes"
+  - Math/physics prompts: `graphable` and `graph_expression` fields added to
+    JSON schema. Model instructs when to set true and provides Desmos-ready
+    expression string.
+  - artifact.js: extracts graphable/graph_expression from structuredSolution;
+    guard forces graphable:false if expression is empty. Writes
+    `graph: { graphable, expression }` to artifact at top level.
+  - wolfram.js: LIVE — queries Wolfram Full Results API (native fetch). Extracts
+    Result pod plaintext. Returns { success, result, raw }. WOLFRAM_APP_ID from
+    env. No new npm dependencies.
+  - physicsAudit.js: LIVE — second Claude call (claude-sonnet-4-5, temp 0.3)
+    instructed to use a different physical method. Returns { agrees,
+    audit_answer, method, confidence, note, dimensional }. Lightweight unit
+    regex for dimensional analysis.
+  - /solve: when advanced:true — math path calls wolfram.js, loose comparison
+    yields verdict (confirmed/discrepancy/unavailable). Physics path calls
+    physicsAudit.js. Both results passed into buildProblemArtifact.
+  - artifact.js: accepts casResult + auditResult. Writes cas: { verdict,
+    wolfram_result, expression_checked, used } and audit: { verdict,
+    audit_answer, method, confidence, note, dimensional, used }.
+    cost_meta includes cas_used and audit_used booleans.
+  - Math/physics system prompts: audience reframed to technically literate
+    grad students. explanation "justify the move, don't describe it" (2–3
+    sentences dense). concept "name the principle, apply it directly" (1–2
+    sentences, no definitions). overview one sentence. No logic changes.
+  - normalizeQuestionForModel(): strips only conversational filler (please,
+    can you, could you, etc.). All math operation verbs preserved intact.
+  - wolfram.js: stripLatexForWolfram() converts LaTeX to plain math before
+    every Wolfram API call. Logs raw + stripped expression.
+  - verifyDirectEquality(): new fast path in verifyMathAnswer — evaluates
+    both sides of single-equation inputs numerically via math.js. Covers
+    sin(pi/4)=sqrt(2)/2, cos(0)=1, and all pure trig/numeric evaluations.
+    Called before substitution path; falls through if free variables present.
+  - artifact.js: physics badge override — when auditResult.used, sets
+    badge→"checked", method→"cross_method_audit", user_reason reflects audit
+    outcome. Without audit: "Use Cross-Method Audit for an independent check."
+  - BUILD_VERSION: "v3.2.1-fixes"
 
 Frontend (/frontend/src/app/page.tsx)
   - Next.js + Tailwind + KaTeX
@@ -403,15 +541,34 @@ Frontend (/frontend/src/app/page.tsx)
   - Suggestion chips: gated behind artifact.suggestions.length > 0 only
   - Math keyboard: symbol overlay, insert at cursor, Σ toggle
   - Format hint: mode-aware panel, renders above composer on showFormatHint
-  - Advanced verification: taste gate (3/month free), secondary badge on result,
-    Pro upsell gate (href="#" placeholder)
+  - Advanced verification: taste gate (3/month free), Pro upsell gate
+    (href="#" placeholder). advancedVerifResult now holds full Artifact.
+    Math panel: Wolfram verdict — emerald "Confirmed by Wolfram Alpha",
+    amber "Wolfram Alpha returned a different result" + result in JetBrains
+    Mono, zinc "Wolfram Alpha could not evaluate this expression".
+    Physics panel: labeled "AUDIT"; shows consistent/inconsistent verdict,
+    method used, dimensional analysis line. Never uses "Verified" for physics.
   - KaTeX scaling: final answer [&_.katex]:text-[1.4em]; section equations
     [&_.katex]:text-[1.1em]; left-aligned, overflow-x-auto wrapper on sections
   - Section titles: label style (13px uppercase tracking zinc-400, not bold 17px)
   - Explanation text: 14px leading-7 zinc-300 (was 15px leading-8 zinc-200)
   - "Why this works": state-aware colors, mt-3, concept panel left-border
     (border-l border-white/[0.08] bg-white/[0.02] leading-7 zinc-400)
-  - Graph: placeholder (Phase 3)
+  - Graph: LIVE — Artifact type includes `graph?: { graphable, expression }`.
+    Desmos script loaded once on mount. showGraph state resets on doSolve and
+    logo click. "View graph" renders only when artifact.graph.graphable === true;
+    hidden entirely otherwise. Graph modal: fixed z-50 overlay, max-w-2xl
+    container, h-[480px] Desmos embed, "Open in Desmos ↗" link, close on
+    backdrop or × button. Calculator options: expressions/keypad/settingsMenu
+    false, zoomButtons true.
+  - Artifact type: includes cas?: { verdict, wolfram_result, expression_checked,
+    used } and audit?: { verdict, audit_answer, method, confidence, note,
+    dimensional, used }.
+  - Certainty dot suppressed when badge === "checked" — only shown for
+    "verified" and "discrepancy_detected".
+  - Desmos setExpression called with 100ms delay after GraphingCalculator
+    init to ensure internal Desmos state is ready.
+  - Action cluster physics button: "Cross-method audit" (was "Advanced verification").
 ```
 
 ## 11a. What Claude Code Should Never Do

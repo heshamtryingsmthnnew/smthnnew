@@ -48,9 +48,24 @@ type Artifact = {
     user_reason: string;
   };
   suggestions: Suggestion[];
+  cas?: {
+    verdict: 'confirmed' | 'discrepancy' | 'unavailable' | null;
+    wolfram_result: string | null;
+    expression_checked: string | null;
+    used: boolean;
+  };
   audit?: {
-    verdict: 'clear' | 'minor_flags' | 'major_flags' | null;
-    flags: unknown[];
+    verdict: 'consistent' | 'inconsistent' | null;
+    audit_answer: string | null;
+    method: string | null;
+    confidence: string | null;
+    note: string | null;
+    dimensional: { units_present: boolean; units_consistent: boolean | null } | null;
+    used: boolean;
+  };
+  graph?: {
+    graphable: boolean;
+    expression: string;
   };
   graph_spec?: {
     expressions: string[];
@@ -61,6 +76,7 @@ type Artifact = {
     llm_calls: number;
     advanced_verification_used: boolean;
     cas_used: boolean;
+    audit_used: boolean;
   };
 };
 
@@ -201,6 +217,20 @@ function getVerificationDetails(artifact: Artifact | null) {
 }
 
 
+declare global {
+  interface Window {
+    Desmos?: {
+      GraphingCalculator: (
+        element: HTMLElement,
+        options?: Record<string, unknown>
+      ) => {
+        setExpression: (opts: Record<string, unknown>) => void;
+        destroy: () => void;
+      };
+    };
+  }
+}
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>('math');
   const [question, setQuestion] = useState('');
@@ -219,12 +249,16 @@ export default function Home() {
   const [advancedVerifUsed, setAdvancedVerifUsed] = useState(0);
   const ADVANCED_VERIF_FREE_LIMIT = 3;
   const [advancedVerifLoading, setAdvancedVerifLoading] = useState(false);
-  const [advancedVerifResult, setAdvancedVerifResult] = useState<Artifact['verification'] | null>(null);
+  const [advancedVerifResult, setAdvancedVerifResult] = useState<Artifact | null>(null);
   const [showAdvancedVerifGate, setShowAdvancedVerifGate] = useState(false);
+  const [showGraph, setShowGraph] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mathKeyboardRef = useRef<HTMLButtonElement>(null);
   const composerRef = useRef<HTMLFormElement>(null);
+  const desmosRef = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const calculatorRef = useRef<any>(null);
 
   const examples = mode === 'math' ? MATH_EXAMPLES : PHYSICS_EXAMPLES;
   const verificationDetails = getVerificationDetails(artifact);
@@ -242,6 +276,59 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [examples]);
 
+  // Initialize Desmos calculator when modal opens — inject script then poll until ready
+  useEffect(() => {
+    if (!showGraph) return;
+
+    // Inject script once if not already present
+    if (!document.getElementById('desmos-script')) {
+      const s = document.createElement('script');
+      s.id = 'desmos-script';
+      s.src = `https://www.desmos.com/api/v1.8/calculator.js?apiKey=${process.env.NEXT_PUBLIC_DESMOS_API_KEY}`;
+      document.head.appendChild(s);
+    }
+
+    const expression = artifact?.graph?.expression || '';
+    let timerId: ReturnType<typeof setTimeout>;
+    let attempts = 0;
+
+    const tryInit = () => {
+      if (!desmosRef.current || !window.Desmos) {
+        if (attempts++ < 80) timerId = setTimeout(tryInit, 100);
+        return;
+      }
+      if (calculatorRef.current) {
+        calculatorRef.current.destroy();
+        calculatorRef.current = null;
+      }
+      calculatorRef.current = window.Desmos.GraphingCalculator(desmosRef.current, {
+        expressions: false,
+        keypad: false,
+        settingsMenu: false,
+        zoomButtons: true,
+        lockViewport: false,
+      });
+      if (expression) {
+        // Small delay ensures Desmos internal state is ready before setting the expression
+        setTimeout(() => {
+          if (calculatorRef.current) {
+            calculatorRef.current.setExpression({ id: 'graph1', latex: expression });
+          }
+        }, 100);
+      }
+    };
+
+    timerId = setTimeout(tryInit, 50);
+
+    return () => {
+      clearTimeout(timerId);
+      if (calculatorRef.current) {
+        calculatorRef.current.destroy();
+        calculatorRef.current = null;
+      }
+    };
+  }, [showGraph, artifact?.graph?.expression]);
+
   const doSolve = async () => {
     if (loading || !question.trim()) return;
     setLoading(true);
@@ -252,6 +339,7 @@ export default function Home() {
     setAdvancedVerifResult(null);
     setShowAdvancedVerifGate(false);
     setShowFormatHint(false);
+    setShowGraph(false);
     // advancedVerifUsed intentionally not reset — persists across solves
 
     try {
@@ -308,7 +396,6 @@ export default function Home() {
     }, 0);
   };
 
-  // Phase 5: route to Tier 3 CAS endpoint. Current implementation re-runs same model — result will usually confirm, not audit.
   const runAdvancedVerification = async () => {
     if (!artifact || loading) return;
     setAdvancedVerifLoading(true);
@@ -318,7 +405,7 @@ export default function Home() {
         mode: artifact.mode,
         advanced: true,
       });
-      setAdvancedVerifResult(res.data.artifact?.verification || null);
+      setAdvancedVerifResult(res.data.artifact || null);
     } catch (err) {
       console.error('[Advanced Verification]', err);
     } finally {
@@ -392,6 +479,7 @@ export default function Home() {
               setShowAdvancedVerifGate(false);
               setShowFormatHint(false);
               setMathKeyboardOpen(false);
+              setShowGraph(false);
             }}
             className="cursor-pointer"
           >
@@ -477,7 +565,9 @@ export default function Home() {
                     className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${getBadgeClasses(artifact.verification.badge)}`}
                   >
                     <span>{getBadgeLabel(artifact.verification.badge)}</span>
-                    {certaintyLabel && <span className="opacity-80">• {certaintyLabel}</span>}
+                    {certaintyLabel && artifact.verification.badge !== 'checked' && (
+                      <span className="opacity-80">• {certaintyLabel}</span>
+                    )}
                   </div>
                 </div>
 
@@ -504,36 +594,82 @@ export default function Home() {
                     disabled={advancedVerifLoading}
                     className="transition hover:text-zinc-300 disabled:opacity-50"
                   >
-                    {advancedVerifLoading ? 'Checking...' : 'Advanced verification'}
+                    {advancedVerifLoading ? 'Checking...' : artifact.mode === 'physics' ? 'Cross-method audit' : 'Advanced verification'}
                   </button>
-                  <span className="text-zinc-800">|</span>
-                  <button
-                    type="button"
-                    className="transition hover:text-zinc-300"
-                  >
-                    View graph
-                  </button>
+                  {artifact.graph?.graphable && (
+                    <>
+                      <span className="text-zinc-800">|</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowGraph(true)}
+                        className="transition hover:text-zinc-300"
+                      >
+                        View graph
+                      </button>
+                    </>
+                  )}
                 </div>
 
                 {/* Advanced verification result */}
                 {advancedVerifResult && !advancedVerifLoading && (
                   <div className="mt-4 rounded-[16px] border border-white/[0.08] bg-white/[0.03] px-4 py-3">
-                    <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Advanced check</div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium ${getBadgeClasses(advancedVerifResult.badge)}`}>
-                        {getBadgeLabel(advancedVerifResult.badge)}
-                      </div>
-                      {advancedVerifResult.method && (
-                        <span className="text-xs text-zinc-500">Method: {formatMethodLabel(advancedVerifResult.method)}</span>
-                      )}
-                    </div>
-                    <div className="mt-2 text-xs">
-                      {advancedVerifResult.badge === artifact.verification.badge
-                        ? <span className="text-emerald-400">Confirmed by independent check</span>
-                        : <span className="text-amber-400">Results differ — review your input</span>
-                      }
-                    </div>
-                    <div className="mt-1 text-xs text-zinc-600">
+                    {/* Math: Wolfram CAS verdict */}
+                    {artifact.mode === 'math' && advancedVerifResult.cas?.used && (
+                      <>
+                        <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Advanced check</div>
+                        {advancedVerifResult.cas.verdict === 'confirmed' && (
+                          <div className="text-xs text-emerald-400">Confirmed by Wolfram Alpha</div>
+                        )}
+                        {advancedVerifResult.cas.verdict === 'discrepancy' && (
+                          <div>
+                            <div className="text-xs text-amber-400">Wolfram Alpha returned a different result</div>
+                            {advancedVerifResult.cas.wolfram_result && (
+                              <div className={`${jetbrainsMono.className} mt-2 text-xs text-zinc-300`}>
+                                {advancedVerifResult.cas.wolfram_result}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {advancedVerifResult.cas.verdict === 'unavailable' && (
+                          <div className="text-xs text-zinc-400">Wolfram Alpha could not evaluate this expression</div>
+                        )}
+                      </>
+                    )}
+                    {/* Physics: AI audit verdict */}
+                    {artifact.mode === 'physics' && advancedVerifResult.audit?.used && (
+                      <>
+                        <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Audit</div>
+                        {advancedVerifResult.audit.verdict === 'consistent' && (
+                          <div>
+                            <div className="text-xs text-zinc-300">Alternative method consistent</div>
+                            {advancedVerifResult.audit.method && (
+                              <div className="mt-1 text-xs text-zinc-500">{advancedVerifResult.audit.method}</div>
+                            )}
+                          </div>
+                        )}
+                        {advancedVerifResult.audit.verdict === 'inconsistent' && (
+                          <div>
+                            <div className="text-xs text-amber-400">Alternative method returned a different result</div>
+                            {advancedVerifResult.audit.audit_answer && (
+                              <div className={`${jetbrainsMono.className} mt-2 text-xs text-zinc-300`}>
+                                {advancedVerifResult.audit.audit_answer}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {advancedVerifResult.audit.dimensional && (
+                          <div className="mt-2 text-xs">
+                            {!advancedVerifResult.audit.dimensional.units_present && (
+                              <span className="text-zinc-500">Units not detected in answer</span>
+                            )}
+                            {advancedVerifResult.audit.dimensional.units_present && advancedVerifResult.audit.dimensional.units_consistent === false && (
+                              <span className="text-amber-400">Unit inconsistency detected</span>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                    <div className="mt-2 text-xs text-zinc-600">
                       Uses remaining: {Math.max(0, ADVANCED_VERIF_FREE_LIMIT - advancedVerifUsed)} of {ADVANCED_VERIF_FREE_LIMIT}
                     </div>
                   </div>
@@ -916,6 +1052,42 @@ export default function Home() {
           </div>
         </form>
       </div>
+      {/* Graph modal */}
+      {showGraph && artifact?.graph?.graphable && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/90 backdrop-blur-sm"
+          onClick={() => setShowGraph(false)}
+        >
+          <div
+            className="relative mx-4 w-full max-w-2xl rounded-[24px] border border-white/[0.08] bg-zinc-950 p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Graph</span>
+              <button
+                type="button"
+                onClick={() => setShowGraph(false)}
+                className="text-zinc-500 transition hover:text-zinc-300"
+              >
+                ×
+              </button>
+            </div>
+
+            <div ref={desmosRef} className="h-[480px] w-full overflow-hidden rounded-[16px]" />
+
+            <div className="mt-3 flex justify-end">
+              <a
+                href="https://www.desmos.com/calculator"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-zinc-600 transition hover:text-zinc-400"
+              >
+                Open in Desmos ↗
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

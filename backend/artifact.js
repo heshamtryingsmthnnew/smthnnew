@@ -300,14 +300,14 @@ function buildUserReason({ badge, mode, normalizedKind, verification }) {
   }
 
   if (mode === "physics") {
-    return "Independent verification is not available for physics problems yet.";
+    return "Use Cross-Method Audit for an independent check.";
   }
 
   if (normalizedKind === "unknown") {
     return "I couldn't extract a clean math expression from the input.";
   }
 
-  return "Independent verification is not available for this problem yet.";
+  return "Deterministic verification not available for this problem type. Use Advanced Verification for a deeper check.";
 }
 
 function buildSuggestions(reasonCode) {
@@ -375,6 +375,8 @@ function buildProblemArtifact({
   llmCalls = 1,
   normalizedUsed = false,
   advancedVerificationUsed = false,
+  casResult = null,
+  auditResult = null,
 }) {
   const badge = mapVerificationToBadge(
   verification,
@@ -402,6 +404,14 @@ const certainty = mapVerificationToCertainty(
   });
 
   const suggestions = buildSuggestions(reasonCode);
+
+  let graphable = structuredSolution?.graphable === true;
+  const graphExpression = typeof structuredSolution?.graph_expression === 'string'
+    ? structuredSolution.graph_expression.trim()
+    : '';
+  if (graphable && !graphExpression) {
+    graphable = false;
+  }
 
   const fallbackFinalAnswer = extractFinalMathLine(answer);
   const { intro, sections: legacySections } = extractIntroAndSections(answer);
@@ -432,6 +442,23 @@ const certainty = mapVerificationToCertainty(
           })),
         };
 
+  // Physics badge override: when audit was run, reflect audit result in verification
+  let finalBadge = badge;
+  let finalCertainty = certainty;
+  let finalReasonCode = reasonCode;
+  let finalMethod = verification?.meta?.type || verification?.reason || null;
+  let finalUserReason = userReason;
+
+  if (mode === 'physics' && auditResult && auditResult.used) {
+    finalBadge = 'checked';
+    finalCertainty = 'low';
+    finalReasonCode = null;
+    finalMethod = 'cross_method_audit';
+    finalUserReason = auditResult.agrees
+      ? 'Audited via alternative method — results consistent.'
+      : 'Alternative method returned a different result — review recommended.';
+  }
+
   return {
     id: `artifact_${Date.now()}`,
     build_version: buildVersion,
@@ -452,19 +479,48 @@ const certainty = mapVerificationToCertainty(
     solution,
 
     verification: {
-      badge,
-      certainty,
-      reason_code: reasonCode,
-      method: verification?.meta?.type || verification?.reason || null,
+      badge: finalBadge,
+      certainty: finalCertainty,
+      reason_code: finalReasonCode,
+      method: finalMethod,
       meta: verification?.meta || null,
-      user_reason: userReason,
+      user_reason: finalUserReason,
     },
 
     suggestions,
 
-    audit: {
-      verdict: null,
-      flags: [],
+    cas: casResult
+      ? {
+          verdict: casResult.verdict,
+          wolfram_result: casResult.wolfram_result || null,
+          expression_checked: casResult.expression_checked || null,
+          used: true,
+        }
+      : { verdict: null, wolfram_result: null, expression_checked: null, used: false },
+
+    audit: auditResult
+      ? {
+          verdict: auditResult.agrees === true ? 'consistent' : auditResult.agrees === false ? 'inconsistent' : null,
+          audit_answer: auditResult.audit_answer || null,
+          method: auditResult.method || null,
+          confidence: auditResult.confidence || null,
+          note: auditResult.note || null,
+          dimensional: auditResult.dimensional || { units_present: false, units_consistent: null },
+          used: true,
+        }
+      : {
+          verdict: null,
+          audit_answer: null,
+          method: null,
+          confidence: null,
+          note: null,
+          dimensional: null,
+          used: false,
+        },
+
+    graph: {
+      graphable,
+      expression: graphExpression,
     },
 
     graph_spec: {
@@ -478,7 +534,8 @@ const certainty = mapVerificationToCertainty(
       model: 'claude-sonnet-4-5',
       normalized_used: normalizedUsed,
       advanced_verification_used: advancedVerificationUsed,
-      cas_used: false,
+      cas_used: casResult !== null,
+      audit_used: auditResult !== null,
     },
   };
 }
