@@ -2,13 +2,15 @@
 
 import { BlockMath } from 'react-katex';
 import axios from 'axios';
-import { useEffect, useState, useRef, FormEvent, KeyboardEvent, ChangeEvent } from 'react';
+import { useEffect, useState, useRef, useCallback, FormEvent, KeyboardEvent, ChangeEvent } from 'react';
 import { DM_Serif_Display, JetBrains_Mono } from 'next/font/google';
+import { motion, AnimatePresence } from 'framer-motion';
 
 const dmSerifDisplay = DM_Serif_Display({ subsets: ['latin'], weight: '400' });
 const jetbrainsMono = JetBrains_Mono({ subsets: ['latin'] });
 
 type Mode = 'math' | 'physics';
+type SolveStage = 'idle' | 'parsing' | 'generating' | 'verifying' | 'building' | 'complete';
 
 type Suggestion = {
   action: string;
@@ -216,7 +218,6 @@ function getVerificationDetails(artifact: Artifact | null) {
   return entries;
 }
 
-
 declare global {
   interface Window {
     Desmos?: {
@@ -248,10 +249,16 @@ export default function Home() {
   // Phase 5: replace with server-side counter tied to auth session
   const [advancedVerifUsed, setAdvancedVerifUsed] = useState(0);
   const ADVANCED_VERIF_FREE_LIMIT = 3;
+  // Auto-fire: first solve per page session triggers advanced verification automatically.
+  // Phase 5 replaces this with server-side per-user monthly limits.
+  const [hasSeenAdvancedVerification, setHasSeenAdvancedVerification] = useState(false);
   const [advancedVerifLoading, setAdvancedVerifLoading] = useState(false);
   const [advancedVerifResult, setAdvancedVerifResult] = useState<Artifact | null>(null);
   const [showAdvancedVerifGate, setShowAdvancedVerifGate] = useState(false);
-  const [showGraph, setShowGraph] = useState(false);
+  const [graphOpen, setGraphOpen] = useState(false);
+  const [solveStage, setSolveStage] = useState<SolveStage>('idle');
+  const solveStageRef = useRef<SolveStage>('idle');
+  const solveTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mathKeyboardRef = useRef<HTMLButtonElement>(null);
@@ -265,6 +272,23 @@ export default function Home() {
   const certaintyLabel = artifact ? getCertaintyLabel(artifact.verification.certainty) : null;
   const isActive = loading || !!artifact;
 
+  const handleReset = useCallback(() => {
+    solveTimersRef.current.forEach(clearTimeout);
+    solveTimersRef.current = [];
+    setSolveStage('idle');
+    solveStageRef.current = 'idle';
+    setArtifact(null);
+    setQuestion('');
+    setGhostQuestion('');
+    setOpenExplainIndex(null);
+    setShowProofDetails(false);
+    setAdvancedVerifResult(null);
+    setShowAdvancedVerifGate(false);
+    setShowFormatHint(false);
+    setMathKeyboardOpen(false);
+    setGraphOpen(false);
+  }, []);
+
   useEffect(() => {
     setExampleIndex(0);
   }, [mode]);
@@ -276,9 +300,9 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [examples]);
 
-  // Initialize Desmos calculator when modal opens — inject script then poll until ready
+  // Initialize Desmos calculator when popover opens — inject script then poll until ready
   useEffect(() => {
-    if (!showGraph) return;
+    if (!graphOpen) return;
 
     // Inject script once if not already present
     if (!document.getElementById('desmos-script')) {
@@ -327,10 +351,19 @@ export default function Home() {
         calculatorRef.current = null;
       }
     };
-  }, [showGraph, artifact?.graph?.expression]);
+  }, [graphOpen, artifact?.graph?.expression]);
 
   const doSolve = async () => {
     if (loading || !question.trim()) return;
+
+    // Auto-fire advanced verification on the first solve of this page session.
+    // Does NOT count toward the manual-use limit (advancedVerifUsed unchanged).
+    const shouldAutoFire = !hasSeenAdvancedVerification;
+
+    // Clear any in-flight stage timers from a previous solve
+    solveTimersRef.current.forEach(clearTimeout);
+    solveTimersRef.current = [];
+
     setLoading(true);
     setArtifact(null);
     setGhostQuestion('');
@@ -339,16 +372,42 @@ export default function Home() {
     setAdvancedVerifResult(null);
     setShowAdvancedVerifGate(false);
     setShowFormatHint(false);
-    setShowGraph(false);
+    setGraphOpen(false);
     // advancedVerifUsed intentionally not reset — persists across solves
 
+    // Start progress stages
+    const setStage = (s: SolveStage) => { setSolveStage(s); solveStageRef.current = s; };
+    setStage('parsing');
+    solveTimersRef.current.push(setTimeout(() => setStage('generating'), 600));
+    solveTimersRef.current.push(setTimeout(() => setStage('verifying'), 2400));
+    solveTimersRef.current.push(setTimeout(() => setStage('building'), 3600));
+
     try {
-      const res = await axios.post('http://localhost:5000/solve', {
-        question,
-        mode,
-      });
+      const res = await axios.post('http://localhost:5000/solve', { question, mode, advanced: shouldAutoFire });
+
+      // Clear scheduled stage timers
+      solveTimersRef.current.forEach(clearTimeout);
+      solveTimersRef.current = [];
+
+      // Snap through any remaining stages at 100ms intervals then fade
+      const STAGE_ORDER: SolveStage[] = ['parsing', 'generating', 'verifying', 'building'];
+      const currentIdx = STAGE_ORDER.indexOf(solveStageRef.current as SolveStage);
+      let delay = 0;
+      for (let i = currentIdx + 1; i < STAGE_ORDER.length; i++) {
+        delay += 100;
+        const s = STAGE_ORDER[i];
+        solveTimersRef.current.push(setTimeout(() => setStage(s), delay));
+      }
+      delay += 100;
+      solveTimersRef.current.push(setTimeout(() => setStage('complete'), delay));
+      solveTimersRef.current.push(setTimeout(() => setStage('idle'), delay + 300));
+
       setArtifact(res.data.artifact || null);
+      if (shouldAutoFire) setHasSeenAdvancedVerification(true);
     } catch (err) {
+      solveTimersRef.current.forEach(clearTimeout);
+      solveTimersRef.current = [];
+      setStage('idle');
       console.error(err);
       setArtifact(null);
     } finally {
@@ -452,70 +511,108 @@ export default function Home() {
         }
       `}</style>
 
-      {/* Slogan — fixed, visible in idle state only */}
+      {/* Left Panel */}
+      <aside className="fixed left-0 top-0 z-30 flex h-screen w-60 flex-col border-r border-white/[0.08] bg-zinc-950 p-5">
+        {/* Logo */}
+        <button
+          type="button"
+          onClick={handleReset}
+          className="cursor-pointer pt-1 pb-6 text-left"
+        >
+          <span className={`${dmSerifDisplay.className} text-[22px] tracking-tight text-white`}>Ergo.</span>
+        </button>
+
+        {/* Nav */}
+        <div className="space-y-1">
+          <button
+            type="button"
+            onClick={handleReset}
+            className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-[14px] text-zinc-300 transition-colors hover:bg-white/[0.03] hover:text-zinc-100"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              <polyline points="9 22 9 12 15 12 15 22" />
+            </svg>
+            Home
+          </button>
+        </div>
+
+        <div className="my-4 border-t border-white/[0.08]" />
+
+        {/* Sessions */}
+        <div>
+          <div className="px-3 pb-2 text-[11px] uppercase tracking-wider text-zinc-500">Sessions</div>
+          <div className="mx-3 my-2 rounded-md border border-white/[0.04] bg-white/[0.02] p-3">
+            <p className="text-[14px] leading-6 text-zinc-400">Sign in to save and track your sessions</p>
+            <button
+              type="button"
+              onClick={() => {/* Phase 5: open auth flow */}}
+              className="mt-2 w-full rounded-md bg-zinc-800 px-3 py-1.5 text-[13px] text-zinc-100 transition-colors hover:bg-zinc-700"
+            >
+              Sign in
+            </button>
+          </div>
+        </div>
+
+        {/* Bottom items */}
+        <div className="mt-auto space-y-1">
+          <div className="mb-3 border-t border-white/[0.08]" />
+          {/* Profile */}
+          <button
+            type="button"
+            onClick={() => {/* Phase 5: open auth flow */}}
+            className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-[14px] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+              <circle cx="12" cy="7" r="4" />
+            </svg>
+            Profile
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-[14px] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+            Settings
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-[14px] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            Help
+          </button>
+        </div>
+      </aside>
+
+      {/* Slogan — fixed, visible in idle state only, centered in content area */}
       <div
-        className={`pointer-events-none fixed left-1/2 z-10 -translate-x-1/2 -translate-y-1/2 text-center transition-opacity duration-[380ms] ease-out ${isActive ? 'opacity-0' : 'opacity-100'}`}
-        style={{ top: '42vh' }}
+        className={`pointer-events-none fixed z-10 text-center transition-opacity duration-[380ms] ease-out ${isActive ? 'opacity-0' : 'opacity-100'}`}
+        style={{ top: '42vh', left: 'calc(50% + 120px)', transform: 'translateX(-50%) translateY(-50%)' }}
       >
         <p className={`${dmSerifDisplay.className} text-2xl text-zinc-300`}>
           The answer, and the proof.
         </p>
       </div>
 
-      {/* Scrollable content — bottom padding clears fixed input bar */}
-      <div className="relative z-10 px-6 pt-4 pb-[220px]">
+      {/* Scrollable content — ml-60 clears the fixed left panel */}
+      <div className="relative z-10 ml-60 px-6 pt-8 pb-[220px]">
 
-        {/* Header */}
-        <header className="relative z-20 mb-6 flex items-center justify-between border-b border-white/[0.06] bg-zinc-950 pb-4">
-          <button
-            type="button"
-            onClick={() => {
-              setArtifact(null);
-              setQuestion('');
-              setGhostQuestion('');
-              setOpenExplainIndex(null);
-              setShowProofDetails(false);
-              setAdvancedVerifResult(null);
-              setShowAdvancedVerifGate(false);
-              setShowFormatHint(false);
-              setMathKeyboardOpen(false);
-              setShowGraph(false);
-            }}
-            className="cursor-pointer"
-          >
-            <span className={`${dmSerifDisplay.className} text-3xl tracking-tight text-white`}>Ergo.</span>
-          </button>
-
-          <div className="flex items-center gap-2">
-            {/* Profile */}
-            <button
-              type="button"
-              className="flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.10] bg-white/[0.08]"
-              title="Profile"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-400">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                <circle cx="12" cy="7" r="4" />
-              </svg>
-            </button>
-
-            {/* Settings */}
-            <button type="button" className="p-1 text-zinc-400 transition hover:text-white" title="Settings">
-              <svg width="16" height="12" viewBox="0 0 16 12" fill="none">
-                <line x1="0" y1="1" x2="16" y2="1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                <line x1="0" y1="6" x2="16" y2="6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                <line x1="0" y1="11" x2="16" y2="11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-            </button>
-          </div>
-        </header>
-
-        {/* Dot pattern — content area only, below header */}
+        {/* Dot pattern — content area only */}
         <div
           aria-hidden="true"
-          className={`pointer-events-none fixed bottom-0 left-0 right-0 transition-opacity duration-[380ms] ease-out ${isActive ? 'opacity-0' : 'opacity-100'}`}
+          className={`pointer-events-none fixed bottom-0 right-0 transition-opacity duration-[380ms] ease-out ${isActive ? 'opacity-0' : 'opacity-100'}`}
           style={{
             top: 0,
+            left: '240px',
             zIndex: 5,
             backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.08) 1px, transparent 1px)',
             backgroundSize: '24px 24px',
@@ -527,25 +624,8 @@ export default function Home() {
         {/* Solve Surface */}
         <section className="px-2 py-2">
 
-          {/* Workspace controls — always visible */}
-          <div className="mb-4 flex items-center justify-between">
-            <button
-              type="button"
-              className="flex h-7 w-7 items-center justify-center text-zinc-500 transition hover:text-zinc-300"
-              title="History"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10" />
-                <polyline points="12 6 12 12 16 14" />
-              </svg>
-            </button>
-
-          </div>
-
-          {loading && (
-            <div className="flex min-h-[300px] items-start justify-center px-6 pt-24 text-center text-sm text-zinc-500">
-              Thinking through the problem...
-            </div>
+          {solveStage !== 'idle' && (
+            <SolveProgress stage={solveStage} />
           )}
 
           {artifact && (
@@ -601,7 +681,7 @@ export default function Home() {
                       <span className="text-zinc-800">|</span>
                       <button
                         type="button"
-                        onClick={() => setShowGraph(true)}
+                        onClick={() => setGraphOpen(true)}
                         className="transition hover:text-zinc-300"
                       >
                         View graph
@@ -720,7 +800,7 @@ export default function Home() {
                   </div>
                 )}
 
-                {/* Proof details panel (inline; Phase 2 converts to drawer) */}
+                {/* Proof details panel */}
                 {showProofDetails && (
                   <div className="mt-5 rounded-[20px] border border-white/8 bg-white/[0.03] px-5 py-4">
                     <div className="mb-3 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Proof Details</div>
@@ -806,15 +886,14 @@ export default function Home() {
         </section>
       </div>
 
-      {/* Floating Input Composer — animates position/width on submit */}
+      {/* Floating Input Composer — centered in content area (right of 240px panel) */}
       <div
         className="fixed z-50"
         style={{
-          left: '50%',
+          left: 'calc(50% + 120px)',
           transform: 'translateX(-50%)',
           bottom: isActive ? 0 : '32vh',
-          width: isActive ? '100%' : '700px',
-          maxWidth: '100%',
+          width: isActive ? 'calc(100% - 240px)' : '700px',
           paddingLeft: isActive ? '1.5rem' : 0,
           paddingRight: isActive ? '1.5rem' : 0,
           paddingTop: isActive ? '2.5rem' : 0,
@@ -887,7 +966,7 @@ export default function Home() {
 
         {/* Left: Mode tabs / Right: Interactive bookmark — both relative to composer */}
         <div className="relative mb-0">
-          {/* Mode tabs — z-20, sit on top */}
+          {/* Mode tabs */}
           <div className="relative z-20 mb-3 flex items-center gap-5 pl-4">
             <button
               type="button"
@@ -916,7 +995,7 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Interactive tab — top-right, overlaps input top edge */}
+          {/* Interactive tab */}
           <button
             type="button"
             onClick={() => setInteractiveMode((v) => !v)}
@@ -955,7 +1034,6 @@ export default function Home() {
               transition: 'border-color 150ms ease-out',
             }}
           >
-
             {/* Attachment preview */}
             {attachedFile && (
               <div className="flex items-center gap-2 px-5 pt-3">
@@ -986,7 +1064,6 @@ export default function Home() {
 
             {/* Toolbar row */}
             <div className="flex items-center justify-between px-3 pb-3">
-              {/* Left: attachment + math keyboard + interactive indicator */}
               <div className="flex items-center gap-1">
                 <button
                   type="button"
@@ -1033,7 +1110,7 @@ export default function Home() {
                 </span>
               )}
 
-              {/* Right: Solve */}
+              {/* Solve button */}
               <button
                 type="submit"
                 disabled={loading || !question.trim()}
@@ -1052,42 +1129,48 @@ export default function Home() {
           </div>
         </form>
       </div>
-      {/* Graph modal */}
-      {showGraph && artifact?.graph?.graphable && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/90 backdrop-blur-sm"
-          onClick={() => setShowGraph(false)}
-        >
-          <div
-            className="relative mx-4 w-full max-w-2xl rounded-[24px] border border-white/[0.08] bg-zinc-950 p-6"
-            onClick={(e) => e.stopPropagation()}
+
+      {/* Graph Popover — floating top-right, does not push content */}
+      <AnimatePresence>
+        {graphOpen && artifact?.graph?.graphable && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            className="fixed right-6 top-20 z-40 h-[400px] w-[500px] overflow-hidden rounded-lg border border-white/[0.08] bg-zinc-950 shadow-2xl"
+            style={{ transformOrigin: 'top right' }}
           >
-            <div className="mb-4 flex items-center justify-between">
-              <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Graph</span>
+            {/* Popover header */}
+            <div className="flex h-10 items-center justify-between border-b border-white/[0.06] px-4">
+              <span className="text-[11px] uppercase tracking-wider text-zinc-500">Graph</span>
               <button
                 type="button"
-                onClick={() => setShowGraph(false)}
-                className="text-zinc-500 transition hover:text-zinc-300"
+                onClick={() => setGraphOpen(false)}
+                className="rounded p-1 text-zinc-500 transition hover:bg-white/[0.05] hover:text-zinc-300"
               >
-                ×
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
               </button>
             </div>
 
-            <div ref={desmosRef} className="h-[480px] w-full overflow-hidden rounded-[16px]" />
-
-            <div className="mt-3 flex justify-end">
+            {/* Desmos embed */}
+            <div className="relative h-[360px] w-full">
+              <div ref={desmosRef} className="h-full w-full" />
               <a
-                href="https://www.desmos.com/calculator"
+                href={`https://www.desmos.com/calculator?${new URLSearchParams({ expression: artifact.graph.expression }).toString()}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-xs text-zinc-600 transition hover:text-zinc-400"
+                className="absolute bottom-3 right-3 text-[12px] text-zinc-400 transition hover:text-zinc-200"
               >
                 Open in Desmos ↗
               </a>
             </div>
-          </div>
-        </div>
-      )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </main>
   );
 }
@@ -1098,6 +1181,57 @@ function FlowDivider() {
       <div className="h-px flex-1 bg-white/10" />
       <div className="h-px w-12 bg-white/16" />
       <div className="h-px flex-1 bg-white/10" />
+    </div>
+  );
+}
+
+const SOLVE_STAGES: { key: SolveStage; label: string }[] = [
+  { key: 'parsing',    label: 'Parsing' },
+  { key: 'generating', label: 'Generating solution' },
+  { key: 'verifying',  label: 'Running verification' },
+  { key: 'building',   label: 'Building proof' },
+];
+
+const STAGE_ORDER: SolveStage[] = ['parsing', 'generating', 'verifying', 'building'];
+
+function getItemState(stageKey: SolveStage, current: SolveStage): 'pending' | 'active' | 'complete' {
+  if (current === 'complete') return 'complete';
+  if (current === 'idle') return 'pending';
+  const si = STAGE_ORDER.indexOf(stageKey);
+  const ci = STAGE_ORDER.indexOf(current);
+  if (si < ci) return 'complete';
+  if (si === ci) return 'active';
+  return 'pending';
+}
+
+function SolveProgress({ stage }: { stage: SolveStage }) {
+  return (
+    <div
+      className={`my-8 flex flex-col gap-3 transition-opacity duration-300 ${stage === 'complete' ? 'opacity-0' : 'opacity-100'}`}
+    >
+      {SOLVE_STAGES.map(({ key, label }) => {
+        const state = getItemState(key, stage);
+        return (
+          <div key={key} className={`flex items-center gap-3 text-[13px] transition-colors duration-300 ${
+            state === 'active'   ? 'text-zinc-100' :
+            state === 'complete' ? 'text-zinc-400' :
+                                   'text-zinc-600'
+          }`}>
+            <div className="flex w-4 items-center justify-center">
+              {state === 'complete' ? (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : state === 'active' ? (
+                <div className="h-2 w-2 animate-pulse rounded-full bg-zinc-100" />
+              ) : (
+                <div className="h-2 w-2 rounded-full border border-zinc-600" />
+              )}
+            </div>
+            {label}
+          </div>
+        );
+      })}
     </div>
   );
 }

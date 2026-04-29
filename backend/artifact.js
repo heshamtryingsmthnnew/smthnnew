@@ -442,12 +442,29 @@ const certainty = mapVerificationToCertainty(
           })),
         };
 
-  // Physics badge override: when audit was run, reflect audit result in verification
+  // Badge overrides: reflect CAS (math) or audit (physics) result when run
   let finalBadge = badge;
   let finalCertainty = certainty;
   let finalReasonCode = reasonCode;
   let finalMethod = verification?.meta?.type || verification?.reason || null;
   let finalUserReason = userReason;
+
+  if (mode === 'math' && casResult && casResult.used) {
+    if (casResult.verdict === 'confirmed') {
+      finalBadge = 'verified';
+      finalCertainty = 'confirmed';
+      finalReasonCode = null;
+      finalMethod = 'wolfram_cas';
+      finalUserReason = 'Confirmed by Wolfram Alpha.';
+    } else if (casResult.verdict === 'discrepancy') {
+      finalBadge = 'discrepancy_detected';
+      finalCertainty = 'none';
+      finalReasonCode = 'VALIDATION_FAILED';
+      finalMethod = 'wolfram_cas';
+      finalUserReason = 'Wolfram Alpha returned a different result — review recommended.';
+    }
+    // verdict === 'unavailable': keep Tier 1 badge/reason unchanged
+  }
 
   if (mode === 'physics' && auditResult && auditResult.used) {
     finalBadge = 'checked';
@@ -531,7 +548,7 @@ const certainty = mapVerificationToCertainty(
 
     cost_meta: {
       llm_calls: llmCalls,
-      model: 'claude-sonnet-4-5',
+      model: process.env.SOLUTION_MODEL || 'claude-sonnet-4-5',
       normalized_used: normalizedUsed,
       advanced_verification_used: advancedVerificationUsed,
       cas_used: casResult !== null,

@@ -7,8 +7,9 @@ const { buildProblemArtifact } = require('./artifact');
 const { queryWolfram } = require('./wolfram');
 const { runPhysicsAudit } = require('./physicsAudit');
 
-const BUILD_VERSION = "v3.2.1-fixes";
+const BUILD_VERSION = "v3.4.0-perf";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
+const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -1587,7 +1588,7 @@ Problem: ${modelQuestion}${discriminantHint ? `\n${discriminantHint}` : ''}
 Mode: ${safeMode}`;
 
       const message = await client.messages.create({
-        model: 'claude-sonnet-4-5',
+        model: SOLUTION_MODEL,
         max_tokens: 2048,
         temperature,
         system: systemPrompt,
@@ -1672,7 +1673,7 @@ Problem: ${question}
 Mode: physics`;
 
       const physicsMessage = await client.messages.create({
-        model: 'claude-sonnet-4-5',
+        model: SOLUTION_MODEL,
         max_tokens: 2048,
         temperature,
         system: physicsSystemPrompt,
@@ -1777,9 +1778,26 @@ Mode: physics`;
 
     if (isAdvanced) {
       if (safeMode === 'math') {
-        const expression = structuredSolution.final_answer_latex || answer;
-        console.log('[CAS] Querying Wolfram Alpha for:', expression);
-        const wolframResult = await queryWolfram(expression);
+        // For equation-type answers (e.g. "x = 2 or x = -4"), send the original
+        // equation + candidate values to Wolfram for substitution verification.
+        // For non-equation outputs (simplified expressions, evaluated values), send
+        // final_answer_latex directly.
+        const isEquationType = /[a-zA-Z]\s*=/.test(structuredSolution.final_answer_latex || '');
+        let casExpression;
+
+        if (isEquationType && question) {
+          const cleanQuestion = normalizeQuestionForModel(question);
+          const cleanAnswer = (structuredSolution.final_answer_latex || '')
+            .replace(/\\text\{[^}]*\}/g, ' ')
+            .replace(/\\quad/g, ' ')
+            .trim();
+          casExpression = `${cleanQuestion}, ${cleanAnswer}`;
+        } else {
+          casExpression = structuredSolution.final_answer_latex || answer;
+        }
+
+        console.log('[CAS] Querying Wolfram Alpha for:', casExpression);
+        const wolframResult = await queryWolfram(casExpression);
         console.log('[CAS] Wolfram result:', wolframResult.result);
 
         let verdict = 'unavailable';
@@ -1788,7 +1806,7 @@ Mode: physics`;
           const normalize = (s) =>
             String(s || '').replace(/\s+/g, ' ').replace(/\\[a-zA-Z]+/g, '').replace(/[{}]/g, '').trim().toLowerCase();
           const wNorm = normalize(wolframResult.result);
-          const aNorm = normalize(expression);
+          const aNorm = normalize(casExpression);
           verdict = wNorm && aNorm && (wNorm === aNorm || wNorm.includes(aNorm) || aNorm.includes(wNorm))
             ? 'confirmed'
             : 'discrepancy';
@@ -1797,13 +1815,13 @@ Mode: physics`;
         casResult = {
           verdict,
           wolfram_result: wolframResult.result || null,
-          expression_checked: expression,
+          expression_checked: casExpression,
         };
       } else {
         // Physics: AI audit via different method
         console.log('[Audit] Running physics audit...');
         const auditRaw = await runPhysicsAudit(question, structuredSolution);
-        auditResult = auditRaw;
+        auditResult = { ...auditRaw, used: true };
         console.log('[Audit] Result:', auditResult.agrees, auditResult.method);
       }
     }

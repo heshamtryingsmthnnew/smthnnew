@@ -15,7 +15,12 @@
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d.get\\('artifact',{}\\).get\\('build_version'\\), indent=2\\)\\)\")",
       "Bash(python -c \"import sys,json; print\\(json.load\\(sys.stdin\\).get\\('artifact',{}\\).get\\('build_version','missing'\\)\\)\")",
       "Bash(netstat -ano)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(curl -s -X POST http://localhost:5000/solve -H 'Content-Type: application/json' -d '{\"question\": \"ln\\(x\\) = 2\", \"mode\": \"math\", \"advanced\": true}' -o C:/Users/hesha/AppData/Local/Temp/test1.json)",
+      "Bash(node -e \"const d=require\\('C:/Users/hesha/AppData/Local/Temp/test1.json'\\); console.log\\('expression_checked:', d.artifact?.cas?.expression_checked\\); console.log\\('wolfram_result:', d.artifact?.cas?.wolfram_result\\); console.log\\('verdict:', d.artifact?.cas?.verdict\\);\")",
+      "Bash(TEST_MODEL=claude-sonnet-4-5 node backend/index.js)",
+      "Bash(curl -s -X POST http://localhost:5000/solve -H 'Content-Type: application/json' -d '{\"question\":\"x^2 - 5x + 6 = 0\",\"mode\":\"math\"}')",
+      "Bash(curl -s -X POST http://localhost:5000/solve -H 'Content-Type: application/json' -d '{\"question\":\"x^3 - 6x^2 + 11x - 6 = 0\",\"mode\":\"math\"}')"
     ]
   }
 }

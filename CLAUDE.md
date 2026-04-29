@@ -194,9 +194,11 @@ The audit result is always labeled as an audit, never as verification.
 ## 7. AI Model Architecture (Locked)
 
 - Solution generation: claude-sonnet-4-5
+- Physics audit: claude-sonnet-4-5 (physicsAudit.js)
 - Normalization: embedded in solution call — no separate model
 - CAS future: claude-sonnet-4-5
 - OpenAI: fully removed
+- Haiku evaluated on 8-problem test matrix (MODEL_COMPARISON.md) — scored 100% of Sonnet quality, but reverted to Sonnet by founder decision.
 
 ---
 
@@ -427,7 +429,105 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     math.js and compares with 1e-10 tolerance. Called as fast path in
     verifyMathAnswer(). Covers sin(pi/4) = sqrt(2)/2, cos(0) = 1, 2^8 = 256,
     and all pure trig/numeric evaluations previously returning VALIDATION_INCONCLUSIVE.
-  - BUILD_VERSION: "v3.2.1-fixes"
+  - BUILD_VERSION: "v3.2.2-fixes"
+
+✅ Fix Brief 02 — CAS stripping + physics badge ✅ COMPLETE
+  - FIX 2 (completed): wolfram.js — stripLatexForWolfram() rewritten.
+    Named functions (\ln, \log, \sin, \cos, \tan, \exp) now converted to
+    plain text before catch-all strips remaining LaTeX commands. Implicit
+    multiplication inserted post-cleanup: 3x → 3*x, x(x+1) → x*(x+1).
+    Equation-type answers (final_answer_latex contains "var =") now route
+    to Wolfram as "original equation, candidate values" for substitution
+    verification rather than sending the answer string directly.
+  - FIX 4 (completed): index.js — runPhysicsAudit() result spread with
+    { used: true } at call site. artifact.js condition
+    (auditResult.used === true) now evaluates correctly. Physics badge
+    overrides to "checked" post-audit with method and audit outcome in
+    user_reason. Static "not available for physics" string already removed
+    in Fix Brief 01 — no further changes to artifact.js required.
+  - BUILD_VERSION: "v3.2.2-fixes"
+
+✅ Model Switch — Haiku for solution generation ✅ COMPLETE
+  - claude-haiku-4-5 replaces claude-sonnet-4-5 for primary /solve call.
+  - physicsAudit.js unchanged — stays on claude-sonnet-4-5.
+  - Passed quality bar on 8-problem test matrix (MODEL_COMPARISON.md): 69/80 Haiku vs 69/80 Sonnet (100%).
+  - Cost per solve reduced from ~$0.004–0.005 to ~$0.0008–0.001.
+  - SOLUTION_MODEL env var allows override. artifact.js cost_meta.model reads from env.
+  - BUILD_VERSION: "v3.2.3-haiku"
+  - claude-haiku-4-5 replaces claude-sonnet-4-5 for primary /solve call.
+  - physicsAudit.js unchanged — stays on claude-sonnet-4-5.
+  - Passed quality bar on 8-problem test matrix (MODEL_COMPARISON.md): 69/80 Haiku vs 69/80 Sonnet (100%).
+  - Cost per solve reduced from ~$0.004–0.005 to ~$0.0008–0.001.
+  - SOLUTION_MODEL env var allows override. artifact.js cost_meta.model reads from env.
+  - BUILD_VERSION: "v3.2.3-haiku"
+
+✅ Phase 3c — Left Panel + Graph Popover ✅ COMPLETE
+  - Left panel: 240px fixed, always-visible. Renders Ergo. logo (top, DM Serif
+    Display 22px), Home button, Sessions section with sign-in CTA (pre-auth
+    no-op), Settings/Help at bottom. bg-zinc-950 with border-r white/[0.04]
+    separator. Main content shifted right by ml-60.
+  - handleReset() extracted — called by both the panel Ergo. logo, the panel
+    Home button, and the header Ergo. button. Resets artifact, question,
+    ghostQuestion, panels, keyboard, graphOpen.
+  - Sign in button is no-op pre-Phase 5.
+  - Graph popover replaces graph modal: fixed top-20 right-6, w-[500px]
+    h-[400px], floats over solution content (does not push). Header strip with
+    "GRAPH" label and × close button (SVG X icon). Desmos embed (h-[360px])
+    fills body. "Open in Desmos ↗" URL-parameter link at bottom-right of embed.
+    100ms setExpression delay preserved (Fix 3).
+  - State: graphOpen replaces old showGraph. Resets to false on new solve,
+    handleReset, or × click. Framer Motion AnimatePresence: opacity 0→1,
+    scale 0.95→1, 200ms ease-out on open; reverse on close.
+  - Dot pattern left edge pinned to 240px so it only covers the content area.
+  - Input composer positioning updated: left: calc(50%+120px) centers in
+    content area; width: calc(100%-240px) when active fills content area only.
+  - Right rail removed entirely. No vestigial right-side panel code remains.
+  - Post-3c polish: hamburger menu removed; profile icon wired to sign-in
+    handler; left panel logo removed then restored; border white/[0.08].
+  - Top header removed entirely. Left panel is the sole navigation surface:
+    Ergo. logo at top (DM Serif Display 22px, resets state on click), Home
+    button, Sessions CTA, then Profile / Settings / Help anchored at bottom.
+    Profile click is same no-op handler as Sign in (Phase 5 wires both).
+    Main canvas extends from viewport top — no header eating vertical space.
+  - History icon (workspace top-left placeholder) removed entirely.
+  - BUILD_VERSION: "v3.3.3-layout"
+
+✅ Phase 3d — Performance + Animations ✅ COMPLETE
+  - Sequential progress indicator: 4 stages (Parsing → Generating solution
+    → Running verification → Building proof). Client-side timing with 600ms /
+    2400ms / 3600ms transitions. SolveStage type + solveStageRef tracks current
+    stage. On API response: clears scheduled timers, snaps remaining stages at
+    100ms intervals, sets 'complete' (fade), then 'idle' after 300ms. On error:
+    clears timers, resets to idle immediately. handleReset also clears all
+    timers. Renders as SolveProgress component below content, hidden when idle.
+  - Streaming investigation: Option A — streaming is viable and worth it now.
+    Model response dominates at median ~12,990ms, P95 ~17,345ms. Backend
+    processing (verification + artifact) is negligible at median <5ms total,
+    P95 ~30ms. Streaming would deliver time-to-first-content improvement of
+    ~12s median. Architectural plan: swap client.messages.create() for
+    client.messages.stream(), emit SSE chunks to client, frontend renders
+    partial solution sections as they arrive. Implementation deferred post-launch.
+  - Artifact construction profiling: all sub-stages (badge/certainty mapping,
+    suggestion building, assembly) complete in <1ms synchronously. No awaits
+    in buildProblemArtifact — it is entirely synchronous. No unnecessary
+    sequential operations identified. No refactoring needed.
+  - Performance baseline (v3.4.0-perf, 12 solves, Sonnet 4.5):
+
+    | Stage              | Median (ms) | P95 (ms) |
+    |--------------------|-------------|----------|
+    | Model response     | 12,990      | 17,345   |
+    | Verification       | 1           | 29       |
+    | Artifact construct | <1          | 1        |
+    | Total              | 12,992      | 17,346   |
+
+    | Artifact sub-stage | Median (ms) |
+    |--------------------|-------------|
+    | Badge/certainty    | <1          |
+    | Suggestion build   | <1          |
+    | Assembly           | <1          |
+
+  - Profiling logs removed from backend after measurement.
+  - BUILD_VERSION: "v3.4.0-perf"
 
 🔲 Phase 4 — Deployment
 Vercel (frontend) + Railway/Render (backend), domain, meta/OG tags, env-var API URL.
@@ -452,7 +552,7 @@ cost-per-solve.
 
 Backend (/backend)
   - Express + @anthropic-ai/sdk (OpenAI fully removed)
-  - Model: claude-sonnet-4-5 for all solution generation
+  - Model: claude-sonnet-4-5 for solution generation (SOLUTION_MODEL env var override supported)
   - /solve: working; reads mode, ignores detailLevel (removed)
   - Validation engine: solid (equation substitution, system checks,
     inequality, numeric, MVP fallbacks)
@@ -515,22 +615,35 @@ Backend (/backend)
   - artifact.js: physics badge override — when auditResult.used, sets
     badge→"checked", method→"cross_method_audit", user_reason reflects audit
     outcome. Without audit: "Use Cross-Method Audit for an independent check."
-  - BUILD_VERSION: "v3.2.1-fixes"
+  - Solution model reverted to claude-sonnet-4-5 (founder decision).
+  - SOLUTION_MODEL env var allows override. artifact.js cost_meta.model reads from env.
+  - BUILD_VERSION: "v3.4.0-perf"
 
 Frontend (/frontend/src/app/page.tsx)
-  - Next.js + Tailwind + KaTeX
+  - Next.js + Tailwind + KaTeX + Framer Motion
   - Geist Sans base, DM Serif Display for wordmark + slogan,
     JetBrains Mono for proof values
   - Zinc monochrome color system (no blue except badges)
-  - Animated input (idle centered → active bottom, 380ms ease-out)
-  - Dot pattern background (empty state, fades on solve)
+  - Layout structure: [left panel 240px fixed] [main content with ml-60]
+  - No top header. Left panel is the sole navigation surface (fixed left-0
+    top-0 h-screen w-60 z-30, bg-zinc-950, border-r white/[0.08]):
+    Ergo. logo at top (DM Serif Display 22px, calls handleReset()), Home
+    button, SESSIONS section (sign-in CTA, no-op pre-Phase 5), then Profile /
+    Settings / Help anchored at bottom (mt-auto). Profile click = same no-op
+    as Sign in. Main canvas extends from viewport top (pt-8 only).
+  - handleReset(): clears artifact, question, ghostQuestion, all panels,
+    mathKeyboardOpen, graphOpen. Called by panel logo and panel Home.
+  - Animated input (idle centered in content area → active bottom, 380ms ease-out)
+    left: calc(50%+120px), transform: translateX(-50%). Width: 700px idle,
+    calc(100%-240px) active — fills content area width exactly.
+  - Dot pattern background: left edge pinned at 240px, fades on solve.
+  - Slogan: centered in content area via left: calc(50%+120px)
+    transform: translateX(-50%) translateY(-50%). Fades on solve.
   - Interactive mode bookmark tab (state persists across solves, UI only)
     z-index 22/25 to ensure full hitbox above mode tabs
-  - Header: Ergo. wordmark is now a button — onClick resets all state to idle.
-    No page reload. Profile + plain-lines menu unchanged.
-  - History: workspace top-left placeholder
-  - Right rail: removed
-  - Study mode: removed (state, button, and study flow block all gone)
+  - History: placeholder removed entirely
+  - Right rail: removed entirely — no vestigial code
+  - Study mode: removed
   - Ghost text: submitted question persists as placeholder after solve;
     cleared when user types (ghostQuestion state)
   - Input locked during loading: textarea + tabs + bookmark disabled={loading}
@@ -542,33 +655,24 @@ Frontend (/frontend/src/app/page.tsx)
   - Math keyboard: symbol overlay, insert at cursor, Σ toggle
   - Format hint: mode-aware panel, renders above composer on showFormatHint
   - Advanced verification: taste gate (3/month free), Pro upsell gate
-    (href="#" placeholder). advancedVerifResult now holds full Artifact.
-    Math panel: Wolfram verdict — emerald "Confirmed by Wolfram Alpha",
-    amber "Wolfram Alpha returned a different result" + result in JetBrains
-    Mono, zinc "Wolfram Alpha could not evaluate this expression".
-    Physics panel: labeled "AUDIT"; shows consistent/inconsistent verdict,
-    method used, dimensional analysis line. Never uses "Verified" for physics.
+    (href="#" placeholder). advancedVerifResult holds full Artifact.
+    Math panel: Wolfram verdict — emerald/amber/zinc. Physics panel: "AUDIT"
+    label, consistent/inconsistent verdict, method, dimensional analysis line.
   - KaTeX scaling: final answer [&_.katex]:text-[1.4em]; section equations
     [&_.katex]:text-[1.1em]; left-aligned, overflow-x-auto wrapper on sections
-  - Section titles: label style (13px uppercase tracking zinc-400, not bold 17px)
-  - Explanation text: 14px leading-7 zinc-300 (was 15px leading-8 zinc-200)
+  - Section titles: label style (13px uppercase tracking zinc-400)
+  - Explanation text: 14px leading-7 zinc-300
   - "Why this works": state-aware colors, mt-3, concept panel left-border
-    (border-l border-white/[0.08] bg-white/[0.02] leading-7 zinc-400)
-  - Graph: LIVE — Artifact type includes `graph?: { graphable, expression }`.
-    Desmos script loaded once on mount. showGraph state resets on doSolve and
-    logo click. "View graph" renders only when artifact.graph.graphable === true;
-    hidden entirely otherwise. Graph modal: fixed z-50 overlay, max-w-2xl
-    container, h-[480px] Desmos embed, "Open in Desmos ↗" link, close on
-    backdrop or × button. Calculator options: expressions/keypad/settingsMenu
-    false, zoomButtons true.
-  - Artifact type: includes cas?: { verdict, wolfram_result, expression_checked,
-    used } and audit?: { verdict, audit_answer, method, confidence, note,
-    dimensional, used }.
-  - Certainty dot suppressed when badge === "checked" — only shown for
-    "verified" and "discrepancy_detected".
-  - Desmos setExpression called with 100ms delay after GraphingCalculator
-    init to ensure internal Desmos state is ready.
-  - Action cluster physics button: "Cross-method audit" (was "Advanced verification").
+  - Graph: graphOpen state (replaces showGraph). "View graph" renders only
+    when artifact.graph.graphable === true; hidden otherwise. Graph popover:
+    fixed top-20 right-6, w-[500px] h-[400px], z-40, floats over content
+    (does not push layout). Header strip: "GRAPH" label + SVG × close button.
+    Desmos embed h-[360px], "Open in Desmos ↗" URL-param link bottom-right.
+    Framer Motion AnimatePresence: opacity+scale on open/close. 100ms
+    setExpression delay preserved. Graph modal (fixed inset-0 backdrop) removed.
+  - Artifact type: cas?, audit?, graph? all unchanged.
+  - Certainty dot suppressed when badge === "checked".
+  - Action cluster physics button: "Cross-method audit".
 ```
 
 ## 11a. What Claude Code Should Never Do

@@ -148,7 +148,97 @@ The risk profile of Ergo. right now is not "we built the wrong thing" — it's "
 If either question above starts pulling focus away from Phases 2b through 5, that's a signal to close this file and get back to the roadmap.
 
 ---
+## OPEN QUESTION 3 — When to build SymPy CAS (self-hosted replacement for Wolfram)
 
+**Status:** Unresolved. Deferred until triggered by cost, rate limits, or feature need.
+
+### The trade-off
+
+**Wolfram Alpha API (current):**
+- Cost: $4.99/month base + $0.01/call after 10k
+- At 250 Pro users (3 advanced checks/day average): ~$130/month
+- At 1,000 Pro users: ~$520/month
+- Rate limit: 10 requests/second (paid tier) — can bottleneck at high concurrency
+- Coverage: ~95% of undergrad math, obscure special functions, non-elementary integrals
+- No maintenance burden, but vendor lock-in risk (pricing changes, API deprecation, ToS enforcement)
+
+**SymPy (self-hosted Python sidecar):**
+- Cost: $30–50/month fixed infrastructure (Railway/Render instance)
+- Breakeven: ~50 Pro users. After that, SymPy is cheaper every month.
+- At 250 Pro users: ~$30/month → saves $100/month vs Wolfram
+- At 1,000 Pro users: ~$50/month → saves $470/month vs Wolfram
+- No rate limits you don't control — scales to 100+ req/sec with more instances
+- Coverage: ~85% of undergrad math through second-year calculus and linear algebra
+- Deterministic, inspectable — stronger trust signal than Wolfram black box
+- Enables step-level verification (check each solution section independently) without 8× cost
+- Slower: 500ms–2s vs Wolfram's 200–500ms (mitigated by async + caching)
+- Build time: 2–3 weeks (Python FastAPI service, SymPy wrapper, deploy, wire into Node backend)
+
+### Benefits of SymPy
+
+1. **Cost control** — fixed infrastructure cost, unbounded usage
+2. **No rate limits you don't control** — you own the scaling
+3. **No vendor lock-in** — open-source BSD license, you own the runtime
+4. **Richer output for step-level verification** — symbolic objects you can programmatically inspect
+5. **Deterministic = trust-aligned** — every step is reproducible and traceable
+6. **Physics fallback potential** — sympy.physics.mechanics for symbolic mechanics, units, dimensional analysis
+
+### Drawbacks of SymPy
+
+1. **Slower** — 500ms–2s vs Wolfram's 200–500ms
+2. **Narrower coverage** — 85% vs Wolfram's 95% (missing: obscure special functions, non-elementary integrals, advanced number theory)
+3. **Maintenance burden** — you debug the sidecar, handle version updates, monitor uptime
+4. **Initial build time** — 2–3 weeks opportunity cost vs shipping other features
+
+### Triggers to build SymPy
+
+Do NOT build speculatively. Build when one of these four conditions is met:
+
+**Trigger 1: Wolfram costs hit $300+/month**  
+At ~500 Pro users making $6,000/month revenue. SymPy saves $250+/month. 2–3 week build pays for itself in 3 months. ROI is clear.
+
+**Trigger 2: Wolfram rate limits become a UX problem**  
+If you're seeing `cas.verdict: "unavailable"` due to 429 errors during peak hours (not quota exhaustion, actual rate limiting), and students complain or churn measurably, SymPy removes the bottleneck.
+
+**Trigger 3: You want to ship step-level divergence (Option B)**  
+Multiple Wolfram calls per solve (3–8 calls/verification) at $0.01/call scales to 45% of Pro revenue. SymPy at $0.0001/call (compute cost only) makes step-level divergence economically viable. If this becomes the wedge needed to justify subscription, SymPy is the unlock.
+
+**Trigger 4: Wolfram changes pricing or ToS**  
+If they raise per-call price, shut down the Full Results API, or enforce new restrictions, you have no choice. Build SymPy immediately as escape hatch.
+
+### Decision thresholds
+
+| Monthly Wolfram Cost | Action |
+|---|---|
+| < $200 | Do nothing. Use Wolfram. |
+| $200–300 | Monitor closely. Plan SymPy build. |
+| $300+ | Build SymPy. 2–3 week sprint. |
+| Rate limit failures in logs | Build SymPy regardless of cost. |
+
+### What NOT to do
+
+- Do not build SymPy pre-launch or pre-revenue "just in case"
+- Do not build it for infrastructure elegance — only build when economics or UX force it
+- Do not use SymPy as a reason to delay shipping Phases 3–5
+- Do not build step-level verification (Option B) before SymPy exists — the Wolfram cost is prohibitive
+
+### Realistic baseline (skilled execution)
+
+Ship with Wolfram. Monitor costs and rate limits post-launch via backend logs and Wolfram dashboard. When Trigger 1 or 2 hits, allocate 2–3 weeks to build SymPy as a drop-in Wolfram replacement. Test in parallel (both wired in, backend chooses based on problem type or A/B flag). Swap when parity confirmed. Total delay to product roadmap: 0 weeks (you build it when revenue justifies it).
+
+### Top-tier outcome (1–5% execution)
+
+Build SymPy now as part of Phase 3 or 6. Ship with SymPy + Wolfram both wired in. Backend routing: SymPy for equations/systems/calculus (fast common case), Wolfram as fallback for edge cases (obscure functions, non-elementary integrals). Gives you cost control from day 1, lets you ship step-level divergence (Option B) without economic constraint, removes vendor dependency before it becomes a risk. Delay to roadmap: 2–3 weeks. Payoff: stronger wedge (step-level checks), lower costs (5× reduction at scale), no Wolfram dependency risk.
+
+### Current decision
+
+**Do not build SymPy pre-launch.** Wolfram works, cost is manageable at current scale ($0 — no users yet), and 2–3 weeks spent on SymPy infrastructure could instead ship Phase 4 (deployment) and Phase 5 (auth/monetization). Revenue and traction matter more than infrastructure optimization right now.
+
+**Revisit when:** First trigger condition is met post-Phase 5. Add to roadmap as Phase 6 or 7 depending on timing.
+
+---
+
+*Add this section to STRATEGIC_DECISIONS.md after OPEN QUESTION 2, before the RESOLVED sections.*
 ## REVISION LOG
 
 - **Initial draft** — Logged after conversation about moving from "validated solver" to potential "workflow environment." Decided to defer all expansion decisions until post-Phase 5 conversion data exists.
