@@ -572,6 +572,66 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     Test 5 (unknown): → skipped cleanly
   - BUILD_VERSION: "v3.5.1-cas"
 
+✅ Task 3e-1 — Auto-fire advanced verification on first solve ✅ COMPLETE
+  - hasSeenAdvancedVerification: boolean state (default false). First solve
+    sends advanced:true automatically. setHasSeenAdvancedVerification(true)
+    after first solve completes. advancedVerifUsed counter not incremented.
+  - Bug fix: doSolve was storing CAS result in artifact but advancedVerifResult
+    was left null (reset at solve start). Added setAdvancedVerifResult(artifact)
+    in the shouldAutoFire branch so the panel populates on auto-fire.
+
+✅ Task 3e-2 fixes — In-place discrepancy split layout corrections ✅ COMPLETE
+  - Fix 1: Split moved inside Final Answer box, replacing centered BlockMath.
+    Header strip (amber) + two-column row + subtitle row render in-place.
+    No second panel appended below. Box transforms internally.
+  - Fix 2: Right column uses KaTeXBoundary error boundary. Attempts BlockMath;
+    falls back to JetBrains Mono plaintext if KaTeX parse error. key prop on
+    boundary ensures reset when wolfram_result changes.
+  - Fix 3: displayedSuggestions filters RUN_ADVANCED_VERIFICATION chip when
+    advancedVerifResult is populated. Used in render instead of artifact.suggestions.
+  - Fix 4: Advanced verification button disabled={!!advancedVerifResult} with
+    text-zinc-700 cursor-not-allowed pointer-events-none when used.
+  - Problem 4: Removed border border-amber-500/40 from symbol circle (old
+    appended-panel version). New in-box symbol is bare glyph (≠/!/=) with
+    no border, no circle, no line — just centered amber text.
+  - BUILD_VERSION: "v3.5.2-3e2-fix"
+
+✅ Post-3e-2 polish — split extended to confirmed state + UX fixes ✅ COMPLETE
+  - splitKind replaces showDiscrepancySplit (binary → 3-value:
+    'discrepancy' | 'confirmed' | null). Confirmed verdict now renders the
+    same two-column split layout with emerald colors instead of amber:
+    emerald header strip "✓ Confirmed", = symbol, emerald text.
+    Discrepancy keeps amber header "⚠ Discrepancy Detected", ≠/! symbol.
+  - user_reason (one-line verification summary) hidden once advancedVerifResult
+    is populated. "Deterministic verification not available..." no longer
+    persists after advanced verification runs.
+  - Single-column panel now only renders when splitKind === null (unavailable
+    verdict). confirmed and consistent cases fully handled by the split.
+  - Column headers "Primary solution" and "Wolfram Alpha" / "Alternate method"
+    centered above their respective columns (text-center added).
+
+✅ Phase 3e Polish — Verification split + UI hierarchy fixes ✅ COMPLETE
+  - Right column in confirmed/discrepancy split: switched from KaTeXBoundary to
+    direct JetBrains Mono rendering (Wolfram returns plaintext, not valid LaTeX).
+    Null/empty fallback: italic "Result unavailable" in zinc-500.
+  - Unavailable state: replaced single-column info panel with one-line note
+    (text-[12px] text-zinc-500 mt-2). Badge remains visible.
+  - Progress indicator timing: dwell times extended — parsing→generating 1200ms
+    (was 600ms), generating→verifying 4500ms (was 2400ms), verifying→building
+    7000ms (was 3600ms). Snap interval on early completion: 300ms (was 100ms).
+    Fade delay: delay+400ms (was delay+300ms). Stages feel earned, not rushed.
+  - Composer z-index: changed from fixed z-50 class to dynamic inline style
+    (zIndex: isActive ? 20 : 10). Active state at 20 sits above solution content
+    but below graph popover (z-40) and left panel (z-30).
+  - Solution content bottom padding: pb-[220px] → pb-[280px] to prevent tab
+    strip from overlapping the last section on scroll.
+  - Mode tabs dim during loading: opacity 0.4 when loading, 1 otherwise
+    (transition-opacity duration-200). Soft visual cue matching disabled state.
+  - Action cluster ghost visibility: opacity-0 by default, group-hover:opacity-100
+    on Final Answer card hover (200ms transition). Stays opacity-100 when
+    showProofDetails is true — Hide proof button remains visible while reading.
+  - BUILD_VERSION: "v3.5.2-polish"
+
 🔲 Phase 4 — Deployment
 Vercel (frontend) + Railway/Render (backend), domain, meta/OG tags, env-var API URL.
 
@@ -670,7 +730,7 @@ Backend (/backend)
     outcome. Without audit: "Use Cross-Method Audit for an independent check."
   - Solution model reverted to claude-sonnet-4-5 (founder decision).
   - SOLUTION_MODEL env var allows override. artifact.js cost_meta.model reads from env.
-  - BUILD_VERSION: "v3.5.1-cas"
+  - BUILD_VERSION: "v3.5.2-polish"
 
 Frontend (/frontend/src/app/page.tsx)
   - Next.js + Tailwind + KaTeX + Framer Motion
@@ -703,14 +763,30 @@ Frontend (/frontend/src/app/page.tsx)
   - Textarea placeholder: ghostQuestion (priority) || rotating examples
   - MATH_EXAMPLES (5) + PHYSICS_EXAMPLES (4): full problem strings, rotate
     as placeholder at 2500ms interval
-  - Action cluster: footnote-weight text links (zinc-600), not pill buttons
-  - Suggestion chips: gated behind artifact.suggestions.length > 0 only
+  - Action cluster: opacity-0 by default, group-hover:opacity-100 on Final Answer
+    card (200ms transition). Stays opacity-100 when showProofDetails is true.
+    Advanced verification button: disabled={!!advancedVerifResult} with
+    text-zinc-700 cursor-not-allowed pointer-events-none when used.
+  - Suggestion chips: displayedSuggestions filters RUN_ADVANCED_VERIFICATION
+    when advancedVerifResult is populated.
   - Math keyboard: symbol overlay, insert at cursor, Σ toggle
   - Format hint: mode-aware panel, renders above composer on showFormatHint
-  - Advanced verification: taste gate (3/month free), Pro upsell gate
-    (href="#" placeholder). advancedVerifResult holds full Artifact.
-    Math panel: Wolfram verdict — emerald/amber/zinc. Physics panel: "AUDIT"
-    label, consistent/inconsistent verdict, method, dimensional analysis line.
+  - Advanced verification: auto-fires on first solve (hasSeenAdvancedVerification
+    state). taste gate (3/month free), Pro upsell gate (href="#" placeholder).
+    advancedVerifResult holds full Artifact. splitKind ('discrepancy' |
+    'confirmed' | null) drives in-box split layout:
+      confirmed → emerald header "✓ Confirmed", = symbol, emerald color
+      discrepancy → amber header "⚠ Discrepancy Detected", ≠/! symbol
+      null → simple one-line note ("External check unavailable...") below answer
+    Split renders inside Final Answer box replacing centered BlockMath.
+    Right column: direct JetBrains Mono rendering (Wolfram returns plaintext
+    not valid LaTeX). Null fallback: italic "Result unavailable" in zinc-500.
+    Column headers centered. user_reason hidden once advancedVerifResult set.
+  - Composer: zIndex dynamic via inline style (isActive ? 20 : 10). Removed
+    fixed z-50 class. Active at 20 — above solution content, below graph
+    popover (z-40) and left panel (z-30).
+  - Mode tabs: opacity 0.4 during loading, 1 otherwise (transition-opacity 200ms).
+  - Solution bottom padding: pb-[280px] (was 220px) prevents tab strip overlap.
   - KaTeX scaling: final answer [&_.katex]:text-[1.4em]; section equations
     [&_.katex]:text-[1.1em]; left-aligned, overflow-x-auto wrapper on sections
   - Section titles: label style (13px uppercase tracking zinc-400)

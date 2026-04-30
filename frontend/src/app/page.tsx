@@ -2,7 +2,7 @@
 
 import { BlockMath } from 'react-katex';
 import axios from 'axios';
-import { useEffect, useState, useRef, useCallback, FormEvent, KeyboardEvent, ChangeEvent } from 'react';
+import { useEffect, useState, useRef, useCallback, FormEvent, KeyboardEvent, ChangeEvent, Component } from 'react';
 import { DM_Serif_Display, JetBrains_Mono } from 'next/font/google';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -232,6 +232,18 @@ declare global {
   }
 }
 
+class KaTeXBoundary extends Component<
+  { children: React.ReactNode; fallback: React.ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: React.ReactNode; fallback: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  render() { return this.state.hasError ? this.props.fallback : this.props.children; }
+}
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>('math');
   const [question, setQuestion] = useState('');
@@ -378,9 +390,9 @@ export default function Home() {
     // Start progress stages
     const setStage = (s: SolveStage) => { setSolveStage(s); solveStageRef.current = s; };
     setStage('parsing');
-    solveTimersRef.current.push(setTimeout(() => setStage('generating'), 600));
-    solveTimersRef.current.push(setTimeout(() => setStage('verifying'), 2400));
-    solveTimersRef.current.push(setTimeout(() => setStage('building'), 3600));
+    solveTimersRef.current.push(setTimeout(() => setStage('generating'), 1200));
+    solveTimersRef.current.push(setTimeout(() => setStage('verifying'), 4500));
+    solveTimersRef.current.push(setTimeout(() => setStage('building'), 7000));
 
     try {
       const res = await axios.post('http://localhost:5000/solve', { question, mode, advanced: shouldAutoFire });
@@ -389,18 +401,18 @@ export default function Home() {
       solveTimersRef.current.forEach(clearTimeout);
       solveTimersRef.current = [];
 
-      // Snap through any remaining stages at 100ms intervals then fade
+      // Snap through any remaining stages at 300ms intervals then fade
       const STAGE_ORDER: SolveStage[] = ['parsing', 'generating', 'verifying', 'building'];
       const currentIdx = STAGE_ORDER.indexOf(solveStageRef.current as SolveStage);
       let delay = 0;
       for (let i = currentIdx + 1; i < STAGE_ORDER.length; i++) {
-        delay += 100;
+        delay += 300;
         const s = STAGE_ORDER[i];
         solveTimersRef.current.push(setTimeout(() => setStage(s), delay));
       }
-      delay += 100;
+      delay += 300;
       solveTimersRef.current.push(setTimeout(() => setStage('complete'), delay));
-      solveTimersRef.current.push(setTimeout(() => setStage('idle'), delay + 300));
+      solveTimersRef.current.push(setTimeout(() => setStage('idle'), delay + 400));
 
       setArtifact(res.data.artifact || null);
       if (shouldAutoFire) {
@@ -505,13 +517,24 @@ export default function Home() {
     }
   };
 
-  const showDiscrepancySplit =
-    !!advancedVerifResult &&
-    !advancedVerifLoading &&
-    (
-      (artifact?.mode === 'math' && advancedVerifResult.cas?.verdict === 'discrepancy') ||
-      (artifact?.mode === 'physics' && advancedVerifResult.audit?.verdict === 'inconsistent')
-    );
+  const splitKind: 'discrepancy' | 'confirmed' | null = (() => {
+    if (!advancedVerifResult || advancedVerifLoading) return null;
+    if (artifact?.mode === 'math') {
+      const v = advancedVerifResult.cas?.verdict;
+      if (v === 'discrepancy') return 'discrepancy';
+      if (v === 'confirmed') return 'confirmed';
+    }
+    if (artifact?.mode === 'physics') {
+      const v = advancedVerifResult.audit?.verdict;
+      if (v === 'inconsistent') return 'discrepancy';
+      if (v === 'consistent') return 'confirmed';
+    }
+    return null;
+  })();
+
+  const displayedSuggestions = artifact?.suggestions.filter(
+    (s) => !(s.action === 'RUN_ADVANCED_VERIFICATION' && !!advancedVerifResult)
+  ) ?? [];
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -615,7 +638,7 @@ export default function Home() {
       </div>
 
       {/* Scrollable content — ml-60 clears the fixed left panel */}
-      <div className="relative z-10 ml-60 px-6 pt-8 pb-[220px]">
+      <div className="relative z-10 ml-60 px-6 pt-8 pb-[280px]">
 
         {/* Dot pattern — content area only */}
         <div
@@ -643,15 +666,73 @@ export default function Home() {
             <div className="flex flex-col">
 
               {/* Final Answer block */}
-              <div className="rounded-[24px] border border-white/[0.08] bg-white/[0.04] px-6 py-5">
+              <div className="group rounded-[24px] border border-white/[0.08] bg-white/[0.04] px-6 py-5">
                 <div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Final Answer</div>
 
-                <div className="my-4 flex justify-center [&_.katex]:text-[1.4em]">
-                  <BlockMath math={artifact.solution.final_answer_latex} />
-                </div>
+                {/* Centered answer OR in-box split (discrepancy or confirmed) */}
+                {splitKind === null ? (
+                  <div className="my-4 flex justify-center [&_.katex]:text-[1.4em]">
+                    <BlockMath math={artifact.solution.final_answer_latex} />
+                  </div>
+                ) : (
+                  <>
+                    {/* Header strip — amber for discrepancy, emerald for confirmed */}
+                    <div className={`mt-4 mb-3 rounded-[8px] px-4 py-2 text-[10px] font-medium uppercase tracking-[0.16em] ${splitKind === 'confirmed' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>
+                      {splitKind === 'confirmed' ? '✓ Confirmed' : '⚠ Discrepancy Detected'}
+                    </div>
+                    {/* Two-column comparison */}
+                    <div className="flex items-start">
+                      {/* Left — primary solution */}
+                      <div className="flex-1 pr-2">
+                        <div className="mb-2 text-center text-[10px] uppercase tracking-[0.16em] text-zinc-500">Primary solution</div>
+                        <div className="[&_.katex]:text-[1.1em]">
+                          <BlockMath math={artifact.solution.final_answer_latex} />
+                        </div>
+                      </div>
+                      {/* Symbol — glyph only, no border, no circle, no line */}
+                      <div className={`flex w-10 shrink-0 items-center justify-center self-center text-lg ${splitKind === 'confirmed' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {splitKind === 'confirmed' ? '=' : (artifact.mode === 'math' ? '≠' : '!')}
+                      </div>
+                      {/* Right — external result with KaTeX/mono fallback */}
+                      <div className="flex-1 pl-2">
+                        <div className="mb-2 text-center text-[10px] uppercase tracking-[0.16em] text-zinc-500">
+                          {artifact.mode === 'math' ? 'Wolfram Alpha' : 'Alternate method'}
+                        </div>
+                        {artifact.mode === 'math' ? (
+                          advancedVerifResult?.cas?.wolfram_result ? (
+                            <span className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
+                              {advancedVerifResult.cas.wolfram_result}
+                            </span>
+                          ) : (
+                            <span className="text-sm italic text-zinc-500">Result unavailable</span>
+                          )
+                        ) : (
+                          advancedVerifResult?.audit?.audit_answer ? (
+                            <>
+                              <span className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
+                                {advancedVerifResult.audit.audit_answer}
+                              </span>
+                              {advancedVerifResult.audit.method && (
+                                <div className="mt-2 text-xs text-zinc-500">{advancedVerifResult.audit.method}</div>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-sm italic text-zinc-500">Result unavailable</span>
+                          )
+                        )}
+                      </div>
+                    </div>
+                    {/* Subtitle row aligned under the two columns */}
+                    <div className="mt-2 flex">
+                      <div className="flex-1 text-center text-[10px] text-zinc-600">via deterministic check</div>
+                      <div className="w-10 shrink-0" />
+                      <div className="flex-1 text-center text-[10px] text-zinc-600">via CAS</div>
+                    </div>
+                  </>
+                )}
 
-                {/* Badge — hidden when discrepancy split is showing */}
-                {!showDiscrepancySplit && (
+                {/* Badge — hidden when split is showing */}
+                {splitKind === null && (
                   <div className="mt-4 flex flex-wrap items-center gap-2">
                     <div
                       className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${getBadgeClasses(artifact.verification.badge)}`}
@@ -664,15 +745,15 @@ export default function Home() {
                   </div>
                 )}
 
-                {/* One-line verification summary */}
-                {artifact.verification.user_reason && (
+                {/* One-line verification summary — hidden once advanced verification runs */}
+                {artifact.verification.user_reason && !advancedVerifResult && (
                   <div className="mt-3 text-sm leading-6 text-zinc-300">
                     {artifact.verification.user_reason}
                   </div>
                 )}
 
-                {/* Action cluster */}
-                <div className="mt-4 flex items-center gap-3 text-xs text-zinc-600">
+                {/* Action cluster — ghost until card is hovered, stays visible when proof is expanded */}
+                <div className={`mt-4 flex items-center gap-3 text-xs text-zinc-600 transition-opacity duration-200 ${showProofDetails ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
                   <button
                     type="button"
                     onClick={() => setShowProofDetails((v) => !v)}
@@ -684,8 +765,8 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={handleAdvancedVerification}
-                    disabled={advancedVerifLoading}
-                    className="transition hover:text-zinc-300 disabled:opacity-50"
+                    disabled={advancedVerifLoading || !!advancedVerifResult}
+                    className={`transition disabled:opacity-50 ${advancedVerifResult ? 'cursor-not-allowed text-zinc-700 pointer-events-none' : 'hover:text-zinc-300'}`}
                   >
                     {advancedVerifLoading ? 'Checking...' : artifact.mode === 'physics' ? 'Cross-method audit' : 'Advanced verification'}
                   </button>
@@ -703,96 +784,9 @@ export default function Home() {
                   )}
                 </div>
 
-                {/* Advanced verification result — discrepancy split or single-column */}
-                {showDiscrepancySplit && (
-                  <div className="mt-4 overflow-hidden rounded-[16px] border border-amber-500/30">
-                    {/* Amber header strip */}
-                    <div className="bg-amber-500/10 px-4 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-amber-400">
-                      ⚠ Discrepancy Detected
-                    </div>
-                    {/* Two-column body */}
-                    <div className="relative flex bg-white/[0.02]">
-                      {/* Left column — Claude's answer */}
-                      <div className="flex-1 px-4 py-4">
-                        <div className="mb-3 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Primary answer</div>
-                        <div className="[&_.katex]:text-[1.1em]">
-                          <BlockMath math={artifact.solution.final_answer_latex} />
-                        </div>
-                      </div>
-                      {/* Vertical divider with symbol */}
-                      <div className="relative flex flex-col items-center py-4">
-                        <div className="w-px flex-1 bg-amber-500/20" />
-                        <div className="my-3 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-zinc-950 text-sm text-amber-400">
-                          {artifact.mode === 'math' ? '≠' : '!'}
-                        </div>
-                        <div className="w-px flex-1 bg-amber-500/20" />
-                      </div>
-                      {/* Right column — external result */}
-                      <div className="flex-1 px-4 py-4">
-                        <div className="mb-3 text-[10px] uppercase tracking-[0.16em] text-zinc-500">
-                          {artifact.mode === 'math' ? 'Wolfram Alpha' : 'Alternate method'}
-                        </div>
-                        {artifact.mode === 'math' && advancedVerifResult.cas?.wolfram_result && (
-                          <div className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
-                            {advancedVerifResult.cas.wolfram_result}
-                          </div>
-                        )}
-                        {artifact.mode === 'physics' && advancedVerifResult.audit?.audit_answer && (
-                          <div className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
-                            {advancedVerifResult.audit.audit_answer}
-                          </div>
-                        )}
-                        {artifact.mode === 'physics' && advancedVerifResult.audit?.method && (
-                          <div className="mt-2 text-xs text-zinc-500">{advancedVerifResult.audit.method}</div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Single-column result — confirmed or unavailable */}
-                {advancedVerifResult && !advancedVerifLoading && !showDiscrepancySplit && (
-                  <div className="mt-4 rounded-[16px] border border-white/[0.08] bg-white/[0.03] px-4 py-3">
-                    {/* Math: Wolfram CAS verdict */}
-                    {artifact.mode === 'math' && advancedVerifResult.cas?.used && (
-                      <>
-                        <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Advanced check</div>
-                        {advancedVerifResult.cas.verdict === 'confirmed' && (
-                          <div className="text-xs text-emerald-400">Confirmed by Wolfram Alpha</div>
-                        )}
-                        {advancedVerifResult.cas.verdict === 'unavailable' && (
-                          <div className="text-xs text-zinc-400">Wolfram Alpha could not evaluate this expression</div>
-                        )}
-                      </>
-                    )}
-                    {/* Physics: AI audit verdict */}
-                    {artifact.mode === 'physics' && advancedVerifResult.audit?.used && (
-                      <>
-                        <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Audit</div>
-                        {advancedVerifResult.audit.verdict === 'consistent' && (
-                          <div>
-                            <div className="text-xs text-zinc-300">Alternative method consistent</div>
-                            {advancedVerifResult.audit.method && (
-                              <div className="mt-1 text-xs text-zinc-500">{advancedVerifResult.audit.method}</div>
-                            )}
-                          </div>
-                        )}
-                        {advancedVerifResult.audit.dimensional && (
-                          <div className="mt-2 text-xs">
-                            {!advancedVerifResult.audit.dimensional.units_present && (
-                              <span className="text-zinc-500">Units not detected in answer</span>
-                            )}
-                            {advancedVerifResult.audit.dimensional.units_present && advancedVerifResult.audit.dimensional.units_consistent === false && (
-                              <span className="text-amber-400">Unit inconsistency detected</span>
-                            )}
-                          </div>
-                        )}
-                      </>
-                    )}
-                    <div className="mt-2 text-xs text-zinc-600">
-                      Uses remaining: {Math.max(0, ADVANCED_VERIF_FREE_LIMIT - advancedVerifUsed)} of {ADVANCED_VERIF_FREE_LIMIT}
-                    </div>
-                  </div>
+                {/* Unavailable note — shown only when advanced verification ran but returned no verdict */}
+                {advancedVerifResult && !advancedVerifLoading && splitKind === null && (
+                  <p className="mt-2 text-[12px] text-zinc-500">External check unavailable for this expression.</p>
                 )}
 
                 {/* Pro upsell gate */}
@@ -825,9 +819,9 @@ export default function Home() {
                 )}
 
                 {/* Suggestions — contextual, failure/parser states only */}
-                {artifact.suggestions.length > 0 && (
+                {displayedSuggestions.length > 0 && (
                   <div className="mt-4 flex flex-wrap gap-2">
-                    {artifact.suggestions.map((s, i) => (
+                    {displayedSuggestions.map((s, i) => (
                       <button
                         key={`${s.action}-${i}`}
                         type="button"
@@ -928,12 +922,13 @@ export default function Home() {
 
       {/* Floating Input Composer — centered in content area (right of 240px panel) */}
       <div
-        className="fixed z-50"
+        className="fixed"
         style={{
           left: 'calc(50% + 120px)',
           transform: 'translateX(-50%)',
           bottom: isActive ? 0 : '32vh',
           width: isActive ? 'calc(100% - 240px)' : '700px',
+          zIndex: isActive ? 20 : 10,
           paddingLeft: isActive ? '1.5rem' : 0,
           paddingRight: isActive ? '1.5rem' : 0,
           paddingTop: isActive ? '2.5rem' : 0,
@@ -1007,7 +1002,10 @@ export default function Home() {
         {/* Left: Mode tabs / Right: Interactive bookmark — both relative to composer */}
         <div className="relative mb-0">
           {/* Mode tabs */}
-          <div className="relative z-20 mb-3 flex items-center gap-5 pl-4">
+          <div
+            className="relative z-20 mb-3 flex items-center gap-5 pl-4 transition-opacity duration-200"
+            style={{ opacity: loading ? 0.4 : 1 }}
+          >
             <button
               type="button"
               onClick={() => setMode('math')}

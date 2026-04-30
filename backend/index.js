@@ -7,7 +7,7 @@ const { buildProblemArtifact } = require('./artifact');
 const { queryWolfram, buildWolframQuery, compareWithWolfram } = require('./wolfram');
 const { runPhysicsAudit } = require('./physicsAudit');
 
-const BUILD_VERSION = "v3.5.1-cas";
+const BUILD_VERSION = "v3.5.2-polish";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
