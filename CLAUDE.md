@@ -529,6 +529,49 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
   - Profiling logs removed from backend after measurement.
   - BUILD_VERSION: "v3.4.0-perf"
 
+✅ CAS Refactor — Wolfram architecture rebuild ✅ COMPLETE
+  - Root cause: previous architecture sent Claude's answer to Wolfram (a
+    question-answering engine). Wolfram returned null for all problem types
+    because it expected questions, not answers.
+  - Three confirmed failure modes (diagnostic v3.4.0-perf):
+    (1) Equations: comma syntax interpreted as simultaneous conditions →
+        NoSolutionsFromReduce pod, never a Result pod
+    (2) Differentiation/integration: bare answer expression sent → Wolfram
+        returned analysis pods (Plots, Derivative, Integral) with no Result
+    (3) Integration constant C treated as free variable → 3D plot pods only
+  - Fix 1: buildWolframQuery() in wolfram.js — constructs correct query from
+    original question by problem kind:
+      differentiation → d/dx[expr]
+      integration     → integrate expr (constant C stripped)
+      simplification  → bare expression (Wolfram handles natively)
+      equation        → solve expr (only when Tier 1 unavailable)
+      system/inequality/unknown → skip Wolfram (Tier 1 covers or unsupported)
+  - Fix 2: queryWolfram() now accepts kind parameter, searches pod titles
+    appropriate to the query kind (Derivative pod for differentiation,
+    Indefinite integral pod for integration, etc.)
+  - Fix 3: compareWithWolfram() replaces broken .includes() comparison.
+    Three-tier: numeric sampling at 3 points (1e-6 tolerance) → normalized
+    string compare → unavailable (never false-positive as discrepancy).
+    Extracts RHS from Wolfram's "d/dx(...)=result" prefix for calc kinds.
+    Converts ln()→log() for math.js compatibility (math.js natural log is log()).
+  - Fix 4: stripLatexForWolfram implicit mult block — three new rules:
+    (a) letter→known function: xsin(→x*sin(, xcos(→x*cos(
+    (b) negative lookbehind (?<!\^) protects ^2( (power notation) from
+        becoming ^2*(
+    (c) ^digit→letter rule: x^2ln→x^2*ln (power followed by function name)
+  - Fix 5: detectOperationKind() in index.js — detects differentiation,
+    integration, simplification from question verb before falling back to
+    normalized.kind (which only returns equation/system/inequality/expression)
+  - Fix 6: CAS routing in index.js — equations skip Wolfram when Tier 1
+    validates; unknown/expression kinds skip entirely; all skips log reason
+  - All 5 verification tests confirmed:
+    Test 1 (differentiation): d/dx[x^3*ln(x)] → confirmed
+    Test 2 (integration): integrate x^2*sin(x) → confirmed
+    Test 3 (equation/Tier1): x^2-5x+6=0 → skipped (Tier 1 handled)
+    Test 4 (simplification): simplify sin^2(x)+cos^2(x) → confirmed
+    Test 5 (unknown): → skipped cleanly
+  - BUILD_VERSION: "v3.5.1-cas"
+
 🔲 Phase 4 — Deployment
 Vercel (frontend) + Railway/Render (backend), domain, meta/OG tags, env-var API URL.
 
@@ -586,16 +629,28 @@ Backend (/backend)
   - artifact.js: extracts graphable/graph_expression from structuredSolution;
     guard forces graphable:false if expression is empty. Writes
     `graph: { graphable, expression }` to artifact at top level.
-  - wolfram.js: LIVE — queries Wolfram Full Results API (native fetch). Extracts
-    Result pod plaintext. Returns { success, result, raw }. WOLFRAM_APP_ID from
-    env. No new npm dependencies.
+  - wolfram.js: three exported functions:
+      stripLatexForWolfram(latex) — LaTeX to plain math conversion including
+        letter→function implicit mult (xsin(→x*sin(), power→letter rule
+        (x^2ln→x^2*ln), negative lookbehind protecting ^2( from ^2*(.
+      buildWolframQuery(question, kind) — constructs correct Wolfram query
+        from original question by kind. Returns {query, kind} or null.
+      compareWithWolfram(claudeAnswer, wolframResult, kind) — three-tier:
+        numeric sampling → string normalize → unavailable. Extracts RHS from
+        Wolfram's d/dx(...)=result prefix for calc kinds. Converts ln()→log()
+        for math.js (which uses log() for natural log). Never false-positive.
   - physicsAudit.js: LIVE — second Claude call (claude-sonnet-4-5, temp 0.3)
     instructed to use a different physical method. Returns { agrees,
     audit_answer, method, confidence, note, dimensional }. Lightweight unit
     regex for dimensional analysis.
-  - /solve: when advanced:true — math path calls wolfram.js, loose comparison
-    yields verdict (confirmed/discrepancy/unavailable). Physics path calls
+  - /solve: when advanced:true — math path uses detectOperationKind() to
+    classify question, builds correct Wolfram query via buildWolframQuery(),
+    compares via compareWithWolfram(). Equations skip Wolfram when Tier 1
+    validates. Unknown/expression kinds skip entirely. Physics path calls
     physicsAudit.js. Both results passed into buildProblemArtifact.
+  - CAS routing (index.js): detectOperationKind() detects differentiation,
+    integration, simplification from question verb. kindMap maps to Wolfram
+    query kind. Equations skip when Tier 1 validates. All skips log reason.
   - artifact.js: accepts casResult + auditResult. Writes cas: { verdict,
     wolfram_result, expression_checked, used } and audit: { verdict,
     audit_answer, method, confidence, note, dimensional, used }.
@@ -606,8 +661,6 @@ Backend (/backend)
     sentences, no definitions). overview one sentence. No logic changes.
   - normalizeQuestionForModel(): strips only conversational filler (please,
     can you, could you, etc.). All math operation verbs preserved intact.
-  - wolfram.js: stripLatexForWolfram() converts LaTeX to plain math before
-    every Wolfram API call. Logs raw + stripped expression.
   - verifyDirectEquality(): new fast path in verifyMathAnswer — evaluates
     both sides of single-equation inputs numerically via math.js. Covers
     sin(pi/4)=sqrt(2)/2, cos(0)=1, and all pure trig/numeric evaluations.
@@ -617,7 +670,7 @@ Backend (/backend)
     outcome. Without audit: "Use Cross-Method Audit for an independent check."
   - Solution model reverted to claude-sonnet-4-5 (founder decision).
   - SOLUTION_MODEL env var allows override. artifact.js cost_meta.model reads from env.
-  - BUILD_VERSION: "v3.4.0-perf"
+  - BUILD_VERSION: "v3.5.1-cas"
 
 Frontend (/frontend/src/app/page.tsx)
   - Next.js + Tailwind + KaTeX + Framer Motion

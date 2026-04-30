@@ -403,7 +403,10 @@ export default function Home() {
       solveTimersRef.current.push(setTimeout(() => setStage('idle'), delay + 300));
 
       setArtifact(res.data.artifact || null);
-      if (shouldAutoFire) setHasSeenAdvancedVerification(true);
+      if (shouldAutoFire) {
+        setHasSeenAdvancedVerification(true);
+        setAdvancedVerifResult(res.data.artifact || null);
+      }
     } catch (err) {
       solveTimersRef.current.forEach(clearTimeout);
       solveTimersRef.current = [];
@@ -501,6 +504,14 @@ export default function Home() {
         break;
     }
   };
+
+  const showDiscrepancySplit =
+    !!advancedVerifResult &&
+    !advancedVerifLoading &&
+    (
+      (artifact?.mode === 'math' && advancedVerifResult.cas?.verdict === 'discrepancy') ||
+      (artifact?.mode === 'physics' && advancedVerifResult.audit?.verdict === 'inconsistent')
+    );
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -639,17 +650,19 @@ export default function Home() {
                   <BlockMath math={artifact.solution.final_answer_latex} />
                 </div>
 
-                {/* Badge */}
-                <div className="mt-4 flex flex-wrap items-center gap-2">
-                  <div
-                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${getBadgeClasses(artifact.verification.badge)}`}
-                  >
-                    <span>{getBadgeLabel(artifact.verification.badge)}</span>
-                    {certaintyLabel && artifact.verification.badge !== 'checked' && (
-                      <span className="opacity-80">• {certaintyLabel}</span>
-                    )}
+                {/* Badge — hidden when discrepancy split is showing */}
+                {!showDiscrepancySplit && (
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <div
+                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${getBadgeClasses(artifact.verification.badge)}`}
+                    >
+                      <span>{getBadgeLabel(artifact.verification.badge)}</span>
+                      {certaintyLabel && artifact.verification.badge !== 'checked' && (
+                        <span className="opacity-80">• {certaintyLabel}</span>
+                      )}
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* One-line verification summary */}
                 {artifact.verification.user_reason && (
@@ -690,8 +703,55 @@ export default function Home() {
                   )}
                 </div>
 
-                {/* Advanced verification result */}
-                {advancedVerifResult && !advancedVerifLoading && (
+                {/* Advanced verification result — discrepancy split or single-column */}
+                {showDiscrepancySplit && (
+                  <div className="mt-4 overflow-hidden rounded-[16px] border border-amber-500/30">
+                    {/* Amber header strip */}
+                    <div className="bg-amber-500/10 px-4 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-amber-400">
+                      ⚠ Discrepancy Detected
+                    </div>
+                    {/* Two-column body */}
+                    <div className="relative flex bg-white/[0.02]">
+                      {/* Left column — Claude's answer */}
+                      <div className="flex-1 px-4 py-4">
+                        <div className="mb-3 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Primary answer</div>
+                        <div className="[&_.katex]:text-[1.1em]">
+                          <BlockMath math={artifact.solution.final_answer_latex} />
+                        </div>
+                      </div>
+                      {/* Vertical divider with symbol */}
+                      <div className="relative flex flex-col items-center py-4">
+                        <div className="w-px flex-1 bg-amber-500/20" />
+                        <div className="my-3 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-zinc-950 text-sm text-amber-400">
+                          {artifact.mode === 'math' ? '≠' : '!'}
+                        </div>
+                        <div className="w-px flex-1 bg-amber-500/20" />
+                      </div>
+                      {/* Right column — external result */}
+                      <div className="flex-1 px-4 py-4">
+                        <div className="mb-3 text-[10px] uppercase tracking-[0.16em] text-zinc-500">
+                          {artifact.mode === 'math' ? 'Wolfram Alpha' : 'Alternate method'}
+                        </div>
+                        {artifact.mode === 'math' && advancedVerifResult.cas?.wolfram_result && (
+                          <div className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
+                            {advancedVerifResult.cas.wolfram_result}
+                          </div>
+                        )}
+                        {artifact.mode === 'physics' && advancedVerifResult.audit?.audit_answer && (
+                          <div className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
+                            {advancedVerifResult.audit.audit_answer}
+                          </div>
+                        )}
+                        {artifact.mode === 'physics' && advancedVerifResult.audit?.method && (
+                          <div className="mt-2 text-xs text-zinc-500">{advancedVerifResult.audit.method}</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Single-column result — confirmed or unavailable */}
+                {advancedVerifResult && !advancedVerifLoading && !showDiscrepancySplit && (
                   <div className="mt-4 rounded-[16px] border border-white/[0.08] bg-white/[0.03] px-4 py-3">
                     {/* Math: Wolfram CAS verdict */}
                     {artifact.mode === 'math' && advancedVerifResult.cas?.used && (
@@ -699,16 +759,6 @@ export default function Home() {
                         <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Advanced check</div>
                         {advancedVerifResult.cas.verdict === 'confirmed' && (
                           <div className="text-xs text-emerald-400">Confirmed by Wolfram Alpha</div>
-                        )}
-                        {advancedVerifResult.cas.verdict === 'discrepancy' && (
-                          <div>
-                            <div className="text-xs text-amber-400">Wolfram Alpha returned a different result</div>
-                            {advancedVerifResult.cas.wolfram_result && (
-                              <div className={`${jetbrainsMono.className} mt-2 text-xs text-zinc-300`}>
-                                {advancedVerifResult.cas.wolfram_result}
-                              </div>
-                            )}
-                          </div>
                         )}
                         {advancedVerifResult.cas.verdict === 'unavailable' && (
                           <div className="text-xs text-zinc-400">Wolfram Alpha could not evaluate this expression</div>
@@ -724,16 +774,6 @@ export default function Home() {
                             <div className="text-xs text-zinc-300">Alternative method consistent</div>
                             {advancedVerifResult.audit.method && (
                               <div className="mt-1 text-xs text-zinc-500">{advancedVerifResult.audit.method}</div>
-                            )}
-                          </div>
-                        )}
-                        {advancedVerifResult.audit.verdict === 'inconsistent' && (
-                          <div>
-                            <div className="text-xs text-amber-400">Alternative method returned a different result</div>
-                            {advancedVerifResult.audit.audit_answer && (
-                              <div className={`${jetbrainsMono.className} mt-2 text-xs text-zinc-300`}>
-                                {advancedVerifResult.audit.audit_answer}
-                              </div>
                             )}
                           </div>
                         )}

@@ -4,10 +4,10 @@ const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
 const { create, all } = require('mathjs');
 const { buildProblemArtifact } = require('./artifact');
-const { queryWolfram } = require('./wolfram');
+const { queryWolfram, buildWolframQuery, compareWithWolfram } = require('./wolfram');
 const { runPhysicsAudit } = require('./physicsAudit');
 
-const BUILD_VERSION = "v3.4.0-perf";
+const BUILD_VERSION = "v3.5.1-cas";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
@@ -1521,6 +1521,20 @@ function detectMixedProseInput(input) {
   return hasMath && hasProseWords && wordCount > 4;
 }
 
+function detectOperationKind(question) {
+  const q = String(question || '').trim().toLowerCase();
+  if (/^(differentiate|find\s+(?:the\s+)?derivative\s+of|d\/dx\s+of)\b/.test(q)) {
+    return 'differentiation';
+  }
+  if (/^(integrate|find\s+(?:the\s+)?integral\s+of|antiderivative\s+of)\b/.test(q)) {
+    return 'integration';
+  }
+  if (/^(simplify|expand|factor)\b/.test(q)) {
+    return 'simplification';
+  }
+  return null;
+}
+
 app.post('/solve', async (req, res) => {
   const { question: rawInput, mode, advanced } = req.body;
   const isAdvanced = advanced === true;
@@ -1778,45 +1792,73 @@ Mode: physics`;
 
     if (isAdvanced) {
       if (safeMode === 'math') {
-        // For equation-type answers (e.g. "x = 2 or x = -4"), send the original
-        // equation + candidate values to Wolfram for substitution verification.
-        // For non-equation outputs (simplified expressions, evaluated values), send
-        // final_answer_latex directly.
-        const isEquationType = /[a-zA-Z]\s*=/.test(structuredSolution.final_answer_latex || '');
-        let casExpression;
+        // Determine problem kind from question verb, fall back to normalized payload kind
+        const operationKind = detectOperationKind(question);
+        const problemKind = operationKind || normalized?.kind || 'unknown';
 
-        if (isEquationType && question) {
-          const cleanQuestion = normalizeQuestionForModel(question);
-          const cleanAnswer = (structuredSolution.final_answer_latex || '')
-            .replace(/\\text\{[^}]*\}/g, ' ')
-            .replace(/\\quad/g, ' ')
-            .trim();
-          casExpression = `${cleanQuestion}, ${cleanAnswer}`;
-        } else {
-          casExpression = structuredSolution.final_answer_latex || answer;
-        }
-
-        console.log('[CAS] Querying Wolfram Alpha for:', casExpression);
-        const wolframResult = await queryWolfram(casExpression);
-        console.log('[CAS] Wolfram result:', wolframResult.result);
-
-        let verdict = 'unavailable';
-        if (wolframResult.success && wolframResult.result) {
-          // Loose comparison: normalize whitespace, strip LaTeX delimiters
-          const normalize = (s) =>
-            String(s || '').replace(/\s+/g, ' ').replace(/\\[a-zA-Z]+/g, '').replace(/[{}]/g, '').trim().toLowerCase();
-          const wNorm = normalize(wolframResult.result);
-          const aNorm = normalize(casExpression);
-          verdict = wNorm && aNorm && (wNorm === aNorm || wNorm.includes(aNorm) || aNorm.includes(wNorm))
-            ? 'confirmed'
-            : 'discrepancy';
-        }
-
-        casResult = {
-          verdict,
-          wolfram_result: wolframResult.result || null,
-          expression_checked: casExpression,
+        // Map problem kind to Wolfram query kind
+        const kindMap = {
+          'differentiation': 'differentiation',
+          'integration': 'integration',
+          'simplification': 'simplification',
+          'equation': 'equation',
+          'polynomial_equation': 'equation',
+          'system': null,       // Tier 1 handles systems — skip Wolfram
+          'inequality': null,   // Tier 1 handles inequalities — skip Wolfram
+          'unknown': null,      // Can't build a meaningful Wolfram query
         };
+
+        const wolframKind = kindMap[problemKind] ?? null;
+
+        // Equations: only use Wolfram if Tier 1 was unavailable
+        const tier1WasUnavailable = verification?.status === 'unavailable';
+        const shouldSkipWolfram =
+          (wolframKind === 'equation' && !tier1WasUnavailable) ||
+          wolframKind === null;
+
+        if (!shouldSkipWolfram) {
+          const wolframQuery = buildWolframQuery(question, wolframKind);
+
+          if (wolframQuery) {
+            console.log('[CAS] Query kind:', wolframKind);
+            console.log('[CAS] Wolfram query:', wolframQuery.query);
+
+            const wolframResult = await queryWolfram(wolframQuery.query, wolframKind);
+            console.log('[CAS] Wolfram result:', wolframResult.result);
+
+            let verdict = 'unavailable';
+            if (wolframResult.success && wolframResult.result) {
+              verdict = compareWithWolfram(
+                structuredSolution.final_answer_latex,
+                wolframResult.result,
+                wolframKind
+              );
+            }
+
+            casResult = {
+              verdict,
+              wolfram_result: wolframResult.result || null,
+              expression_checked: wolframQuery.query,
+            };
+          } else {
+            casResult = {
+              verdict: 'unavailable',
+              wolfram_result: null,
+              expression_checked: null,
+            };
+          }
+        } else {
+          console.log('[CAS] Skipping Wolfram —',
+            wolframKind === null
+              ? `problem kind "${problemKind}" not supported`
+              : 'Tier 1 already validated this equation'
+          );
+          casResult = {
+            verdict: 'unavailable',
+            wolfram_result: null,
+            expression_checked: null,
+          };
+        }
       } else {
         // Physics: AI audit via different method
         console.log('[Audit] Running physics audit...');
