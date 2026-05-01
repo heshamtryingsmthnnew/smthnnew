@@ -4,10 +4,10 @@ const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
 const { create, all } = require('mathjs');
 const { buildProblemArtifact } = require('./artifact');
-const { queryWolfram, buildWolframQuery, compareWithWolfram } = require('./wolfram');
+const { queryWolfram, compareWithWolfram, inferKindFromQuery } = require('./wolfram');
 const { runPhysicsAudit } = require('./physicsAudit');
 
-const BUILD_VERSION = "v3.5.2-polish";
+const BUILD_VERSION = "v3.5.8-polish-03b";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
@@ -1562,11 +1562,29 @@ Rules:
 - For quadratics: compute the discriminant D = b²-4ac explicitly. If D is not a perfect square, use the quadratic formula — do not guess factor pairs.
 - Titles must name the operation precisely (e.g. "Factor the quadratic expression", "Apply the quadratic formula", "Isolate x") — never "Step 1", "Step 2", etc.
 - explanation: state what was done and why it follows from the previous step. Assume the student knows the procedure — the explanation should justify the move, not describe it. 2–3 sentences, dense.
-- concept: name the theorem, property, or algebraic principle that licenses this step, then state why it applies here. No definitions. No scaffolding. Connect it directly to the problem. 1–2 sentences.
-- overview: one sentence identifying the problem type and the method used to solve it.
+- concept: name the principle, then trace exactly how it maps to this specific step. Name the components — what plays the role of f, g, u, v, or whatever the principle requires — and show the substitution or mapping explicitly. End with why the result follows. 2–3 sentences.
+  For steps involving composition, substitution, or multi-part rules (chain rule, quotient rule, integration by parts): always trace the component mapping.
+  For direct applications of standard derivatives or identities (d/dx[cos(x)] = -sin(x), sin²+cos²=1): just name the rule and state it applies directly — no forced tracing.
+  Never restate what was already shown in summary_latex. The concept field explains the why and the how, not the what.
+- overview: one sentence identifying the specific expression or function being worked on and the method used. Must reference the actual input — not just the problem type. Examples:
+    "differentiate sin(x²) using the chain rule" NOT "differentiation of a composite function using the chain rule"
+    "factor x² - 5x + 6 by finding two numbers that multiply to 6 and add to -5" NOT "factoring a quadratic expression"
+    "integrate x²sin(x) by parts, letting u = x² and dv = sin(x)dx" NOT "integration using integration by parts"
+  Be specific. The student already knows what type of problem this is — tell them what was done to this particular input.
 - normalized_expression: plain math notation only — no LaTeX environments, no \\begin{cases}, no \\text{}. For systems, separate with semicolons: "2x + y = 7; x - y = 1". Single equations as-is.
 - graphable: true if the problem involves a plottable function, curve, or inequality, or if a graph would reveal something structurally meaningful about the result (roots, shape, solution region). Otherwise false.
-- graph_expression: if graphable, a single Desmos-ready expression string (e.g. "y=x^2-5x+6"). Empty string if not graphable.`;
+- graph_expression: if graphable, a single Desmos-ready expression string (e.g. "y=x^2-5x+6"). Empty string if not graphable.
+- wolfram_query: a Wolfram Alpha-ready query string for this problem. This is different from normalized_expression — it must use Wolfram's query syntax, not math.js syntax. Examples:
+    "differentiate x^3 * ln(x)" → "d/dx[x^3 * ln(x)]"
+    "DIFERENTIATE X^3 LNX" → "d/dx[x^3 * ln(x)]"
+    "integrate x^2 * sin(x) dx" → "integrate x^2 * sin(x) dx"
+    "find the rate of change of x^3 at x=2" → "d/dx[x^3] at x=2"
+    "simplify sin^2(x) + cos^2(x)" → "simplify sin^2(x) + cos^2(x)"
+    "factor x^2 - 5x + 6" → "factor x^2 - 5x + 6"
+    "x^2 - 5x + 6 = 0" → null
+    "2x + y = 7; x - y = 1" → null
+  For equations and systems: always return null. Tier 1 handles those deterministically.
+  For everything else: return the Wolfram Alpha query string that would retrieve the correct result for this operation. Handle typos, all-caps, unusual phrasing, and LaTeX input — normalize them all to clean Wolfram syntax.`;
       temperature = 0.2;
     } else {
       temperature = 0.3;
@@ -1585,6 +1603,7 @@ Rules:
 {
   "final_answer_latex": "final answer in LaTeX notation",
   "normalized_expression": "plain math only — no LaTeX environments, no \\text{}, no \\begin{cases}. Systems: semicolon-separated e.g. '2x + y = 7; x - y = 1'. Single equations as-is.",
+  "wolfram_query": "Wolfram Alpha query string for this problem, or null for equations/systems",
   "graphable": false,
   "graph_expression": "",
   "overview": "one sentence — problem type and method",
@@ -1621,6 +1640,15 @@ Mode: ${safeMode}`;
           ? parsed.normalized_expression.trim()
           : null;
 
+        const wolframQueryFromModel = (
+          parsed &&
+          typeof parsed.wolfram_query === 'string' &&
+          parsed.wolfram_query !== 'null' &&
+          parsed.wolfram_query.trim()
+        ) ? parsed.wolfram_query.trim() : null;
+
+        console.log('[PARSE] wolfram_query:', wolframQueryFromModel);
+
         const normalizedSolution = normalizeStructuredSolution(parsed);
         if (
           normalizedSolution &&
@@ -1639,6 +1667,7 @@ Mode: ${safeMode}`;
           structuredSolution = normalizedSolution;
           structuredSolution.graphable = parsed?.graphable === true;
           structuredSolution.graph_expression = typeof parsed?.graph_expression === 'string' ? parsed.graph_expression.trim() : '';
+          structuredSolution.wolfram_query = wolframQueryFromModel;
           answer = buildLegacyAnswerFromStructuredSolution(structuredSolution);
           console.log('[PARSE] JSON parsing succeeded. normalized_expression:', normalizedExpression);
         } else {
@@ -1659,8 +1688,13 @@ Rules:
 - Titles must name the physical operation precisely (e.g. "Apply conservation of energy", "Resolve into components", "Apply impulse-momentum theorem") — never "Step 1", "Step 2", etc.
 - summary_latex: the governing equation for this step in LaTeX, with variables defined inline if non-standard.
 - explanation: state what was done, which physical constraint or conservation law drives it, and how the algebra follows. Write for someone who can set up the problem themselves — justify the approach, don't walk through it. 2–3 sentences.
-- concept: name the law or principle, then state precisely why it applies to this configuration — not a general statement, a specific one. 1–2 sentences.
-- overview: one sentence identifying the physical system, the quantity being solved for, and the framework used.
+- concept: name the law or principle, then trace how it maps to this specific physical configuration. Name the specific quantities involved (which variable is the force, which is the mass, what the system boundary is), and show why the law applies to this setup rather than a different one. 2–3 sentences.
+  For direct applications of standard equations (F=ma, V=IR): name the law, identify the quantities, state the result directly.
+  Never restate what was already shown in summary_latex.
+- overview: one sentence describing the specific physical scenario and what is being found. Reference the actual values or configuration given. Examples:
+    "find the maximum height of a ball thrown upward at 20 m/s using kinematics" NOT "projectile motion using kinematic equations"
+    "find the current through a 4Ω resistor connected to a 12V battery using Ohm's law" NOT "applying Ohm's law to a resistive circuit"
+  Be specific to the given problem, not generic to the problem type.
 - normalized_expression: the core governing equation in plain notation, no LaTeX environments.
 - graphable: true if the problem involves a quantity that varies over a parameter (time, position, angle) and a graph would reveal something physically meaningful (trajectory, velocity profile, force curve). Otherwise false.
 - graph_expression: if graphable, a single Desmos-ready expression string. Empty string if not graphable.
@@ -1792,67 +1826,35 @@ Mode: physics`;
 
     if (isAdvanced) {
       if (safeMode === 'math') {
-        // Determine problem kind from question verb, fall back to normalized payload kind
-        const operationKind = detectOperationKind(question);
-        const problemKind = operationKind || normalized?.kind || 'unknown';
+        // CAS routing — use model-generated wolfram_query when available.
+        // Model handles all normalization: typos, caps, unusual phrasing, LaTeX input.
+        const wolframQuery = structuredSolution.wolfram_query || null;
 
-        // Map problem kind to Wolfram query kind
-        const kindMap = {
-          'differentiation': 'differentiation',
-          'integration': 'integration',
-          'simplification': 'simplification',
-          'equation': 'equation',
-          'polynomial_equation': 'equation',
-          'system': null,       // Tier 1 handles systems — skip Wolfram
-          'inequality': null,   // Tier 1 handles inequalities — skip Wolfram
-          'unknown': null,      // Can't build a meaningful Wolfram query
-        };
+        if (wolframQuery) {
+          const wolframKind = inferKindFromQuery(wolframQuery);
+          console.log('[CAS] Model-generated query:', wolframQuery);
+          console.log('[CAS] Inferred kind:', wolframKind);
 
-        const wolframKind = kindMap[problemKind] ?? null;
+          const wolframResult = await queryWolfram(wolframQuery, wolframKind);
+          console.log('[CAS] Wolfram result:', wolframResult.result);
 
-        // Equations: only use Wolfram if Tier 1 was unavailable
-        const tier1WasUnavailable = verification?.status === 'unavailable';
-        const shouldSkipWolfram =
-          (wolframKind === 'equation' && !tier1WasUnavailable) ||
-          wolframKind === null;
-
-        if (!shouldSkipWolfram) {
-          const wolframQuery = buildWolframQuery(question, wolframKind);
-
-          if (wolframQuery) {
-            console.log('[CAS] Query kind:', wolframKind);
-            console.log('[CAS] Wolfram query:', wolframQuery.query);
-
-            const wolframResult = await queryWolfram(wolframQuery.query, wolframKind);
-            console.log('[CAS] Wolfram result:', wolframResult.result);
-
-            let verdict = 'unavailable';
-            if (wolframResult.success && wolframResult.result) {
-              verdict = compareWithWolfram(
-                structuredSolution.final_answer_latex,
-                wolframResult.result,
-                wolframKind
-              );
-            }
-
-            casResult = {
-              verdict,
-              wolfram_result: wolframResult.result || null,
-              expression_checked: wolframQuery.query,
-            };
-          } else {
-            casResult = {
-              verdict: 'unavailable',
-              wolfram_result: null,
-              expression_checked: null,
-            };
+          let verdict = 'unavailable';
+          if (wolframResult.success && wolframResult.result) {
+            verdict = compareWithWolfram(
+              structuredSolution.final_answer_latex,
+              wolframResult.result,
+              wolframKind
+            );
           }
+
+          casResult = {
+            verdict,
+            wolfram_result: wolframResult.result || null,
+            expression_checked: wolframQuery,
+          };
         } else {
-          console.log('[CAS] Skipping Wolfram —',
-            wolframKind === null
-              ? `problem kind "${problemKind}" not supported`
-              : 'Tier 1 already validated this equation'
-          );
+          // No wolfram_query from model — equation/system (Tier 1 handles) or model returned null
+          console.log('[CAS] No wolfram_query from model — skipping Wolfram');
           casResult = {
             verdict: 'unavailable',
             wolfram_result: null,

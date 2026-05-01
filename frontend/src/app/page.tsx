@@ -1,6 +1,6 @@
 'use client';
 
-import { BlockMath } from 'react-katex';
+import { BlockMath, InlineMath } from 'react-katex';
 import axios from 'axios';
 import { useEffect, useState, useRef, useCallback, FormEvent, KeyboardEvent, ChangeEvent, Component } from 'react';
 import { DM_Serif_Display, JetBrains_Mono } from 'next/font/google';
@@ -108,6 +108,13 @@ const SYMBOL_MAP: Record<string, string> = {
   'a/b': '/', '(': '(', ')': ')', '≤': '<=', '≥': '>=',
   '≠': '!=', '|x|': 'abs()', 'log': 'log()', 'ln': 'ln()',
 };
+
+const WEDGE_MESSAGES = [
+  'Querying external solver...',
+  'Parsing result...',
+  'Comparing answers...',
+  'Finalising verdict...',
+];
 
 function getBadgeLabel(badge: Artifact['verification']['badge']) {
   switch (badge) {
@@ -278,6 +285,22 @@ export default function Home() {
   const desmosRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const calculatorRef = useRef<any>(null);
+  const artifactRef = useRef<Artifact | null>(null);
+
+  // Wedge animation state
+  type WedgePhase = 'idle' | 'animating' | 'revealing' | 'done';
+  const [wedgePhase, setWedgePhase] = useState<WedgePhase>('idle');
+  const [wedgeLineDrawn, setWedgeLineDrawn] = useState(false);
+  const [wedgeVisibleMessages, setWedgeVisibleMessages] = useState(0);
+  const [wedgeShowResult, setWedgeShowResult] = useState(false);
+  const [wedgeShowHeader, setWedgeShowHeader] = useState(false);
+  const wedgeTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const pendingAdvancedResult = useRef<Artifact | null>(null);
+  const advancedResultReady = useRef(false);
+
+  // Sticky answer bar
+  const answerBoxRef = useRef<HTMLDivElement>(null);
+  const [showStickyBar, setShowStickyBar] = useState(false);
 
   const examples = mode === 'math' ? MATH_EXAMPLES : PHYSICS_EXAMPLES;
   const verificationDetails = getVerificationDetails(artifact);
@@ -289,6 +312,7 @@ export default function Home() {
     solveTimersRef.current = [];
     setSolveStage('idle');
     solveStageRef.current = 'idle';
+    artifactRef.current = null;
     setArtifact(null);
     setQuestion('');
     setGhostQuestion('');
@@ -299,6 +323,17 @@ export default function Home() {
     setShowFormatHint(false);
     setMathKeyboardOpen(false);
     setGraphOpen(false);
+    // Inline wedge reset (cannot call resetWedgeState here due to useCallback ordering)
+    wedgeTimersRef.current.forEach(clearTimeout);
+    wedgeTimersRef.current = [];
+    setWedgePhase('idle');
+    setWedgeLineDrawn(false);
+    setWedgeVisibleMessages(0);
+    setWedgeShowResult(false);
+    setWedgeShowHeader(false);
+    pendingAdvancedResult.current = null;
+    advancedResultReady.current = false;
+    setShowStickyBar(false);
   }, []);
 
   useEffect(() => {
@@ -365,6 +400,20 @@ export default function Home() {
     };
   }, [graphOpen, artifact?.graph?.expression]);
 
+  // Sticky bar: show when answer box scrolls out of viewport upward
+  useEffect(() => {
+    if (!answerBoxRef.current || !artifact) {
+      setShowStickyBar(false);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => { setShowStickyBar(!entry.isIntersecting); },
+      { threshold: 0, rootMargin: '0px 0px 0px 0px' }
+    );
+    observer.observe(answerBoxRef.current);
+    return () => observer.disconnect();
+  }, [artifact]);
+
   const doSolve = async () => {
     if (loading || !question.trim()) return;
 
@@ -377,6 +426,7 @@ export default function Home() {
     solveTimersRef.current = [];
 
     setLoading(true);
+    artifactRef.current = null;
     setArtifact(null);
     setGhostQuestion('');
     setOpenExplainIndex(null);
@@ -385,6 +435,17 @@ export default function Home() {
     setShowAdvancedVerifGate(false);
     setShowFormatHint(false);
     setGraphOpen(false);
+    setShowStickyBar(false);
+    // Reset wedge animation state for new solve
+    wedgeTimersRef.current.forEach(clearTimeout);
+    wedgeTimersRef.current = [];
+    setWedgePhase('idle');
+    setWedgeLineDrawn(false);
+    setWedgeVisibleMessages(0);
+    setWedgeShowResult(false);
+    setWedgeShowHeader(false);
+    pendingAdvancedResult.current = null;
+    advancedResultReady.current = false;
     // advancedVerifUsed intentionally not reset — persists across solves
 
     // Start progress stages
@@ -414,17 +475,25 @@ export default function Home() {
       solveTimersRef.current.push(setTimeout(() => setStage('complete'), delay));
       solveTimersRef.current.push(setTimeout(() => setStage('idle'), delay + 400));
 
+      artifactRef.current = res.data.artifact || null;
       setArtifact(res.data.artifact || null);
       if (shouldAutoFire) {
         setHasSeenAdvancedVerification(true);
-        setAdvancedVerifResult(res.data.artifact || null);
+        pendingAdvancedResult.current = res.data.artifact || null;
+        advancedResultReady.current = true;
+        requestAnimationFrame(() => startWedgeSequence());
       }
     } catch (err) {
       solveTimersRef.current.forEach(clearTimeout);
       solveTimersRef.current = [];
       setStage('idle');
       console.error(err);
+      artifactRef.current = null;
       setArtifact(null);
+      // Clear wedge on error
+      wedgeTimersRef.current.forEach(clearTimeout);
+      wedgeTimersRef.current = [];
+      setWedgePhase('idle');
     } finally {
       setGhostQuestion(question);
       setQuestion('');
@@ -479,9 +548,20 @@ export default function Home() {
         mode: artifact.mode,
         advanced: true,
       });
-      setAdvancedVerifResult(res.data.artifact || null);
+      pendingAdvancedResult.current = res.data.artifact || null;
+      advancedResultReady.current = true;
     } catch (err) {
       console.error('[Advanced Verification]', err);
+      // Reset wedge on error
+      wedgeTimersRef.current.forEach(clearTimeout);
+      wedgeTimersRef.current = [];
+      setWedgePhase('idle');
+      setWedgeLineDrawn(false);
+      setWedgeVisibleMessages(0);
+      setWedgeShowResult(false);
+      setWedgeShowHeader(false);
+      pendingAdvancedResult.current = null;
+      advancedResultReady.current = false;
     } finally {
       setAdvancedVerifLoading(false);
     }
@@ -492,6 +572,9 @@ export default function Home() {
       setShowAdvancedVerifGate(true);
     } else {
       setAdvancedVerifUsed((prev) => prev + 1);
+      advancedResultReady.current = false;
+      pendingAdvancedResult.current = null;
+      startWedgeSequence();
       runAdvancedVerification();
     }
   };
@@ -517,6 +600,85 @@ export default function Home() {
     }
   };
 
+  function clearWedgeTimers() {
+    wedgeTimersRef.current.forEach(clearTimeout);
+    wedgeTimersRef.current = [];
+  }
+
+  function triggerReveal() {
+    setWedgePhase('revealing');
+    const incoming = pendingAdvancedResult.current;
+    setAdvancedVerifResult(incoming);
+
+    const currentArtifact = artifactRef.current;
+    let kind: 'discrepancy' | 'confirmed' | null = null;
+    if (currentArtifact?.mode === 'math') {
+      const v = incoming?.cas?.verdict;
+      if (v === 'discrepancy') kind = 'discrepancy';
+      else if (v === 'confirmed') kind = 'confirmed';
+    } else if (currentArtifact?.mode === 'physics') {
+      const v = incoming?.audit?.verdict;
+      if (v === 'inconsistent') kind = 'discrepancy';
+      else if (v === 'consistent') kind = 'confirmed';
+    }
+
+    if (kind === 'discrepancy') {
+      setWedgeShowHeader(true);
+      const t1 = setTimeout(() => setWedgeShowResult(true), 300);
+      const t2 = setTimeout(() => setWedgePhase('done'), 700);
+      wedgeTimersRef.current.push(t1, t2);
+    } else if (kind === 'confirmed') {
+      setWedgeLineDrawn(false);
+      const t1 = setTimeout(() => {
+        setWedgeLineDrawn(true);
+        setWedgeShowHeader(true);
+        setWedgeShowResult(true);
+      }, 400);
+      const t2 = setTimeout(() => setWedgePhase('done'), 700);
+      wedgeTimersRef.current.push(t1, t2);
+    } else {
+      setWedgeLineDrawn(false);
+      const t1 = setTimeout(() => setWedgePhase('done'), 400);
+      wedgeTimersRef.current.push(t1);
+    }
+  }
+
+  function startWedgeSequence() {
+    clearWedgeTimers();
+    setWedgePhase('animating');
+    setWedgeLineDrawn(false);
+    setWedgeVisibleMessages(0);
+    setWedgeShowResult(false);
+    setWedgeShowHeader(false);
+
+    const t0 = setTimeout(() => setWedgeLineDrawn(true), 50);
+    wedgeTimersRef.current.push(t0);
+
+    const MSG_START = 350;
+    const MSG_INTERVAL = 1500;
+    for (let i = 0; i < WEDGE_MESSAGES.length; i++) {
+      const count = i + 1;
+      const t = setTimeout(() => setWedgeVisibleMessages(count), MSG_START + i * MSG_INTERVAL);
+      wedgeTimersRef.current.push(t);
+    }
+
+    const REVEAL_AT = MSG_START + (WEDGE_MESSAGES.length - 1) * MSG_INTERVAL + MSG_INTERVAL + 200;
+    const tReveal = setTimeout(() => {
+      if (advancedResultReady.current) {
+        triggerReveal();
+      } else {
+        const poll = setInterval(() => {
+          if (advancedResultReady.current) {
+            clearInterval(poll);
+            triggerReveal();
+          }
+        }, 50);
+        wedgeTimersRef.current.push(poll as unknown as ReturnType<typeof setTimeout>);
+      }
+    }, REVEAL_AT);
+    wedgeTimersRef.current.push(tReveal);
+  }
+
   const splitKind: 'discrepancy' | 'confirmed' | null = (() => {
     if (!advancedVerifResult || advancedVerifLoading) return null;
     if (artifact?.mode === 'math') {
@@ -535,6 +697,8 @@ export default function Home() {
   const displayedSuggestions = artifact?.suggestions.filter(
     (s) => !(s.action === 'RUN_ADVANCED_VERIFICATION' && !!advancedVerifResult)
   ) ?? [];
+
+  const wedgeActive = wedgePhase !== 'idle' && !!artifact;
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -627,6 +791,65 @@ export default function Home() {
         </div>
       </aside>
 
+      {/* Sticky answer bar — appears when answer box scrolls out of view */}
+      {artifact && (
+        <div
+          className={`fixed top-0 left-[240px] right-0 z-[25] h-9 transition-all duration-300 ${
+            showStickyBar
+              ? 'translate-y-0 opacity-100 pointer-events-auto'
+              : '-translate-y-full opacity-0 pointer-events-none'
+          }`}
+        >
+          <div className="flex h-full items-center gap-3 bg-zinc-950/75 px-6 shadow-sm">
+            {/* Color bar: verification state */}
+            <div
+              className="h-4 w-[2px] flex-shrink-0 rounded-full"
+              style={{
+                backgroundColor:
+                  splitKind === 'confirmed' ? '#34d399' :
+                  splitKind === 'discrepancy' ? '#fbbf24' :
+                  '#3f3f46',
+              }}
+            />
+            {/* Label */}
+            <span className="flex-shrink-0 text-[10px] uppercase tracking-widest text-zinc-500">
+              Solution
+            </span>
+            {/* Separator dot */}
+            <span className="flex-shrink-0 text-[10px] text-zinc-700">·</span>
+            {/* Final answer — guarded against leaked JSON from model parse failures */}
+            <div className="min-w-0 flex-1 overflow-hidden whitespace-nowrap [&_.katex]:text-[0.82em] [&_.katex-display]:inline [&_.katex-display>span]:inline">
+              {(() => {
+                const lat = artifact.solution.final_answer_latex;
+                const safe = typeof lat === 'string' && lat.length > 0
+                  && !lat.trim().startsWith('{') && !lat.trim().startsWith('[');
+                return safe
+                  ? <InlineMath math={lat} />
+                  : <span className="text-zinc-500 text-[0.82em]">—</span>;
+              })()}
+            </div>
+            {/* Badge pill */}
+            <div
+              className={`flex-shrink-0 rounded-full px-2 py-0.5 text-[10px] ${
+                splitKind === 'confirmed'
+                  ? 'bg-emerald-500/10 text-emerald-400'
+                  : splitKind === 'discrepancy'
+                  ? 'bg-amber-500/10 text-amber-400'
+                  : 'bg-zinc-700/40 text-zinc-400'
+              }`}
+            >
+              {splitKind === 'confirmed'
+                ? 'Confirmed'
+                : splitKind === 'discrepancy'
+                ? 'Discrepancy'
+                : artifact.verification?.badge === 'not_verified'
+                ? 'Not verified'
+                : 'Checked'}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Slogan — fixed, visible in idle state only, centered in content area */}
       <div
         className={`pointer-events-none fixed z-10 text-center transition-opacity duration-[380ms] ease-out ${isActive ? 'opacity-0' : 'opacity-100'}`}
@@ -666,73 +889,235 @@ export default function Home() {
             <div className="flex flex-col">
 
               {/* Final Answer block */}
-              <div className="group rounded-[24px] border border-white/[0.08] bg-white/[0.04] px-6 py-5">
+              <div ref={answerBoxRef} className="group rounded-[24px] border border-white/[0.08] bg-white/[0.04] px-6 py-4">
                 <div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Final Answer</div>
 
-                {/* Centered answer OR in-box split (discrepancy or confirmed) */}
-                {splitKind === null ? (
-                  <div className="my-4 flex justify-center [&_.katex]:text-[1.4em]">
-                    <BlockMath math={artifact.solution.final_answer_latex} />
-                  </div>
-                ) : (
-                  <>
-                    {/* Header strip — amber for discrepancy, emerald for confirmed */}
-                    <div className={`mt-4 mb-3 rounded-[8px] px-4 py-2 text-[10px] font-medium uppercase tracking-[0.16em] ${splitKind === 'confirmed' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>
-                      {splitKind === 'confirmed' ? '✓ Confirmed' : '⚠ Discrepancy Detected'}
+                {/* Centered answer OR in-box split (discrepancy or confirmed) — or animated wedge */}
+                {!wedgeActive ? (
+                  // Static display: single-column before wedge, or split after wedge is done
+                  splitKind === null ? (
+                    <div className="my-4 flex justify-center [&_.katex]:text-[1.4em]">
+                      <BlockMath math={artifact.solution.final_answer_latex} />
                     </div>
-                    {/* Two-column comparison */}
-                    <div className="flex items-start">
-                      {/* Left — primary solution */}
-                      <div className="flex-1 pr-2">
-                        <div className="mb-2 text-center text-[10px] uppercase tracking-[0.16em] text-zinc-500">Primary solution</div>
-                        <div className="[&_.katex]:text-[1.1em]">
+                  ) : (
+                    <>
+                      {/* Header strip — amber for discrepancy, emerald for confirmed */}
+                      <div className={`mt-4 mb-3 rounded-[8px] px-4 py-2 text-[10px] font-medium uppercase tracking-[0.16em] ${splitKind === 'confirmed' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>
+                        {splitKind === 'confirmed' ? '✓ Confirmed' : '⚠ Discrepancy Detected'}
+                      </div>
+                      {/* Two-column comparison */}
+                      <div className="flex items-center">
+                        <div className="flex min-h-[140px] flex-1 flex-col items-center justify-center px-5 py-4 text-center">
+                          <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Primary solution</div>
+                          <div className="[&_.katex]:text-[1.1em]">
+                            <BlockMath math={artifact.solution.final_answer_latex} />
+                          </div>
+                        </div>
+                        <div className={`flex w-10 shrink-0 items-center justify-center self-center text-lg ${splitKind === 'confirmed' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                          {splitKind === 'confirmed' ? '=' : (artifact.mode === 'math' ? '≠' : '!')}
+                        </div>
+                        <div className="flex min-h-[140px] flex-1 flex-col items-center justify-center px-5 py-4 text-center">
+                          <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-zinc-500">
+                            {artifact.mode === 'math' ? 'Wolfram Alpha' : 'Alternate method'}
+                          </div>
+                          {artifact.mode === 'math' ? (
+                            advancedVerifResult?.cas?.wolfram_result ? (
+                              <span className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
+                                {advancedVerifResult.cas.wolfram_result}
+                              </span>
+                            ) : (
+                              <span className="text-sm italic text-zinc-500">Result unavailable</span>
+                            )
+                          ) : (
+                            advancedVerifResult?.audit?.audit_answer ? (
+                              <>
+                                <span className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
+                                  {advancedVerifResult.audit.audit_answer}
+                                </span>
+                                {advancedVerifResult.audit.method && (
+                                  <div className="mt-2 text-xs text-zinc-500">{advancedVerifResult.audit.method}</div>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-sm italic text-zinc-500">Result unavailable</span>
+                            )
+                          )}
+                        </div>
+                      </div>
+                      <div className="mt-2 flex">
+                        <div className="flex-1 text-center text-[10px] text-zinc-600">via deterministic check</div>
+                        <div className="w-10 shrink-0" />
+                        <div className="flex-1 text-center text-[10px] text-zinc-600">via CAS</div>
+                      </div>
+                    </>
+                  )
+                ) : (
+                  // Animated wedge layout — active during and after animation
+                  <div className="relative mt-4" style={{ minHeight: '180px' }}>
+
+                    {/* Animated header strip */}
+                    <AnimatePresence>
+                      {wedgeShowHeader && splitKind === 'discrepancy' && (
+                        <motion.div
+                          initial={{ y: '-100%', opacity: 0 }}
+                          animate={{ y: 0, opacity: 1 }}
+                          exit={{ y: '-100%', opacity: 0 }}
+                          transition={{ duration: 0.2, ease: 'easeOut' }}
+                          className="mb-3 rounded-[8px] bg-amber-500/10 px-4 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-amber-200"
+                        >
+                          ⚠ Discrepancy Detected
+                        </motion.div>
+                      )}
+                      {wedgeShowHeader && splitKind === 'confirmed' && (
+                        <motion.div
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.2 }}
+                          className="mb-3 rounded-[8px] bg-emerald-500/10 px-4 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-emerald-400"
+                        >
+                          ✓ Confirmed
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    {/* Two-column body */}
+                    <div className="relative flex items-start">
+
+                      {/* LEFT — answer slides via Framer Motion layout */}
+                      <motion.div
+                        layout
+                        transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+                        className={`flex flex-col items-center text-center ${wedgeLineDrawn ? 'w-1/2 pr-4' : 'w-full'}`}
+                      >
+                        {wedgeLineDrawn && (
+                          <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-zinc-500">
+                            Primary solution
+                          </div>
+                        )}
+                        <div className="overflow-x-auto [&_.katex]:text-[1.4em]">
                           <BlockMath math={artifact.solution.final_answer_latex} />
                         </div>
-                      </div>
-                      {/* Symbol — glyph only, no border, no circle, no line */}
-                      <div className={`flex w-10 shrink-0 items-center justify-center self-center text-lg ${splitKind === 'confirmed' ? 'text-emerald-400' : 'text-amber-400'}`}>
-                        {splitKind === 'confirmed' ? '=' : (artifact.mode === 'math' ? '≠' : '!')}
-                      </div>
-                      {/* Right — external result with KaTeX/mono fallback */}
-                      <div className="flex-1 pl-2">
-                        <div className="mb-2 text-center text-[10px] uppercase tracking-[0.16em] text-zinc-500">
-                          {artifact.mode === 'math' ? 'Wolfram Alpha' : 'Alternate method'}
-                        </div>
-                        {artifact.mode === 'math' ? (
-                          advancedVerifResult?.cas?.wolfram_result ? (
-                            <span className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
-                              {advancedVerifResult.cas.wolfram_result}
-                            </span>
-                          ) : (
-                            <span className="text-sm italic text-zinc-500">Result unavailable</span>
-                          )
-                        ) : (
-                          advancedVerifResult?.audit?.audit_answer ? (
-                            <>
-                              <span className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
-                                {advancedVerifResult.audit.audit_answer}
-                              </span>
-                              {advancedVerifResult.audit.method && (
-                                <div className="mt-2 text-xs text-zinc-500">{advancedVerifResult.audit.method}</div>
-                              )}
-                            </>
-                          ) : (
-                            <span className="text-sm italic text-zinc-500">Result unavailable</span>
-                          )
+                        {wedgeLineDrawn && (
+                          <div className="mt-2 text-[11px] text-zinc-500">via deterministic check</div>
                         )}
-                      </div>
+                      </motion.div>
+
+                      {/* DIVIDER LINE + SYMBOL */}
+                      {wedgeLineDrawn && (
+                        <div
+                          className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2"
+                          style={{ width: '1px', zIndex: 1 }}
+                        >
+                          <div
+                            className="absolute inset-0"
+                            style={{
+                              background: wedgeShowResult
+                                ? 'rgba(255,255,255,0.08)'
+                                : 'rgba(245,158,11,0.4)',
+                              transform: wedgeLineDrawn ? 'scaleY(1)' : 'scaleY(0)',
+                              transformOrigin: 'top',
+                              transition: 'transform 300ms ease-out, background 200ms ease-in 100ms',
+                            }}
+                          />
+                          <AnimatePresence>
+                            {wedgeShowResult && splitKind !== null && (
+                              <motion.div
+                                initial={{ opacity: 0, scale: 0.8 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                exit={{ opacity: 0, scale: 0.8 }}
+                                transition={{ duration: 0.2, delay: 0.05 }}
+                                className="absolute left-1/2 top-1/2 z-10 flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-zinc-900"
+                              >
+                                <span className={`text-base font-bold ${splitKind === 'discrepancy' ? 'text-amber-400' : 'text-emerald-400'}`}>
+                                  {splitKind === 'discrepancy'
+                                    ? (artifact.mode === 'math' ? '≠' : '!')
+                                    : '='}
+                                </span>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                      )}
+
+                      {/* RIGHT COLUMN */}
+                      {wedgeLineDrawn && (
+                        <div className="flex min-h-[120px] w-1/2 flex-col justify-center pl-4">
+                          <AnimatePresence>
+                            {!wedgeShowResult && (
+                              <motion.div
+                                initial={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                transition={{ duration: 0.2 }}
+                                className="flex flex-col gap-2"
+                              >
+                                {WEDGE_MESSAGES.slice(0, wedgeVisibleMessages).map((msg, i) => (
+                                  <motion.div
+                                    key={i}
+                                    initial={{ opacity: 0, y: 4 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ duration: 0.2, ease: 'easeOut' }}
+                                    className="flex items-center gap-2 text-[13px] text-zinc-400"
+                                  >
+                                    <div className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-zinc-500" />
+                                    {msg}
+                                  </motion.div>
+                                ))}
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+
+                          <AnimatePresence>
+                            {wedgeShowResult && splitKind !== null && (
+                              <motion.div
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                transition={{ duration: 0.2 }}
+                                className="flex flex-col items-center text-center"
+                              >
+                                <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-zinc-500">
+                                  {artifact.mode === 'math' ? 'Wolfram Alpha' : 'Alternate method'}
+                                </div>
+                                <div className="overflow-x-auto">
+                                  {artifact.mode === 'math' ? (
+                                    advancedVerifResult?.cas?.wolfram_result ? (
+                                      <span className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
+                                        {advancedVerifResult.cas.wolfram_result}
+                                      </span>
+                                    ) : (
+                                      <span className="text-sm italic text-zinc-500">Result unavailable</span>
+                                    )
+                                  ) : (
+                                    advancedVerifResult?.audit?.audit_answer ? (
+                                      <>
+                                        <span className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
+                                          {advancedVerifResult.audit.audit_answer}
+                                        </span>
+                                        {advancedVerifResult.audit.method && (
+                                          <div className="mt-2 text-xs text-zinc-500">
+                                            {advancedVerifResult.audit.method}
+                                          </div>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <span className="text-sm italic text-zinc-500">Result unavailable</span>
+                                    )
+                                  )}
+                                </div>
+                                <div className="mt-2 text-[11px] text-zinc-500">
+                                  {artifact.mode === 'math' ? 'via CAS' : 'via cross-method audit'}
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                      )}
                     </div>
-                    {/* Subtitle row aligned under the two columns */}
-                    <div className="mt-2 flex">
-                      <div className="flex-1 text-center text-[10px] text-zinc-600">via deterministic check</div>
-                      <div className="w-10 shrink-0" />
-                      <div className="flex-1 text-center text-[10px] text-zinc-600">via CAS</div>
-                    </div>
-                  </>
+                  </div>
                 )}
 
-                {/* Badge — hidden when split is showing */}
-                {splitKind === null && (
+                {/* Badge — hidden while wedge animating, or when split is showing */}
+                {(!wedgeActive || (wedgePhase === 'done' && splitKind === null)) && (
                   <div className="mt-4 flex flex-wrap items-center gap-2">
                     <div
                       className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${getBadgeClasses(artifact.verification.badge)}`}
@@ -752,8 +1137,14 @@ export default function Home() {
                   </div>
                 )}
 
-                {/* Action cluster — ghost until card is hovered, stays visible when proof is expanded */}
-                <div className={`mt-4 flex items-center gap-3 text-xs text-zinc-600 transition-opacity duration-200 ${showProofDetails ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+                {/* Action cluster — always visible when no split; ghosts on hover when split is showing */}
+                <div className={`mt-4 flex items-center gap-3 text-xs transition-opacity duration-200 ${
+                  splitKind !== null
+                    ? showProofDetails
+                      ? 'opacity-100 text-zinc-500'
+                      : 'opacity-0 text-zinc-500 group-hover:opacity-100'
+                    : 'opacity-100 text-zinc-500'
+                }`}>
                   <button
                     type="button"
                     onClick={() => setShowProofDetails((v) => !v)}
@@ -785,7 +1176,7 @@ export default function Home() {
                 </div>
 
                 {/* Unavailable note — shown only when advanced verification ran but returned no verdict */}
-                {advancedVerifResult && !advancedVerifLoading && splitKind === null && (
+                {advancedVerifResult && !advancedVerifLoading && splitKind === null && wedgePhase === 'done' && (
                   <p className="mt-2 text-[12px] text-zinc-500">External check unavailable for this expression.</p>
                 )}
 
@@ -859,56 +1250,67 @@ export default function Home() {
                 )}
               </div>
 
-              <FlowDivider />
-
-              {/* Overview */}
-              <div className="rounded-[22px] bg-white/[0.04] px-5 py-4">
-                <div className="mb-2 text-xs uppercase tracking-[0.16em] text-zinc-500">Overview</div>
-                <p className="max-w-[850px] text-[15px] leading-8 text-zinc-200">
+              {/* Overview — caption below answer box */}
+              {artifact.solution.overview && (
+                <p className="mt-3 px-1 text-[13px] leading-5 text-zinc-400">
                   {artifact.solution.overview}
                 </p>
-              </div>
+              )}
 
-              <FlowDivider />
+              {/* Solution sections — connected proof layout */}
+              <div className="relative ml-4 mt-4">
+                {/* Vertical connector line */}
+                <div className="absolute left-0 top-2 bottom-2 w-px bg-white/[0.08]" />
 
-              {/* Solution sections */}
-              <div className="flex flex-col">
                 {artifact.solution.sections.map((sec, i) => {
                   const isOpen = openExplainIndex === i;
 
                   return (
-                    <div key={i} className="relative">
-                      <section className={`rounded-[22px] px-4 py-4 pb-2 transition ${interactiveMode ? 'border-l-2 border-white/[0.15] pl-5' : ''}`}>
-                        <div className="mb-3 text-[13px] font-medium uppercase tracking-[0.12em] text-zinc-400">
-                          {sec.title}
-                        </div>
+                    <div key={i} className="relative pl-8 pb-8 last:pb-0">
+                      {/* Step dot on the line */}
+                      <div className="absolute left-[-3px] top-[6px] h-[7px] w-[7px] rounded-full bg-zinc-700 ring-1 ring-zinc-900" />
 
-                        <div className="my-3 flex justify-start overflow-x-auto">
-                          <div className="[&_.katex]:text-[1.1em]">
+                      <div className="space-y-2">
+                        <h3 className="text-[15px] font-medium leading-snug text-zinc-100">
+                          {sec.title}
+                        </h3>
+
+                        {sec.summary_latex && (
+                          <div className="overflow-x-auto py-1 [&_.katex]:text-[1.05em]">
                             <BlockMath math={sec.summary_latex} />
                           </div>
-                        </div>
-
-                        <p className="max-w-[850px] text-[14px] leading-7 text-zinc-300">
-                          {sec.explanation}
-                        </p>
-
-                        <button
-                          type="button"
-                          onClick={() => setOpenExplainIndex(isOpen ? null : i)}
-                          className={`mt-3 text-xs font-medium transition ${isOpen ? 'text-zinc-300' : 'text-zinc-500 hover:text-zinc-300'}`}
-                        >
-                          {isOpen ? 'Hide underlying principle' : 'Why this works'}
-                        </button>
-
-                        {isOpen && (
-                          <div className="mt-3 rounded-r-[14px] border-l border-white/[0.08] bg-white/[0.02] py-3 pl-4 pr-4 text-sm leading-7 text-zinc-400">
-                            {sec.concept || 'No concept explanation available for this step.'}
-                          </div>
                         )}
-                      </section>
 
-                      {i < artifact.solution.sections.length - 1 && <FlowDivider />}
+                        {sec.explanation && (
+                          <p className="max-w-[850px] text-[14px] leading-6 text-zinc-300">
+                            {sec.explanation}
+                          </p>
+                        )}
+
+                        {isOpen && sec.concept && (
+                          <p className="text-[12px] leading-5 text-zinc-500 italic">
+                            {sec.concept}
+                          </p>
+                        )}
+
+                        {sec.concept && (
+                          <button
+                            type="button"
+                            onClick={() => setOpenExplainIndex(isOpen ? null : i)}
+                            className="text-[11px] text-zinc-600 transition hover:text-zinc-400"
+                          >
+                            {isOpen ? 'Hide concept' : 'Why this works'}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Partial right-side separator — whisper-level, not on last step */}
+                      {i < artifact.solution.sections.length - 1 && (
+                        <div
+                          className="absolute bottom-0 right-0 h-px bg-white/[0.07]"
+                          style={{ width: 'calc(100% / 6)' }}
+                        />
+                      )}
                     </div>
                   );
                 })}
@@ -1001,10 +1403,12 @@ export default function Home() {
 
         {/* Left: Mode tabs / Right: Interactive bookmark — both relative to composer */}
         <div className="relative mb-0">
-          {/* Mode tabs */}
+          {/* Mode tabs — dim when solution is displayed, full on hover */}
           <div
             className="relative z-20 mb-3 flex items-center gap-5 pl-4 transition-opacity duration-200"
-            style={{ opacity: loading ? 0.4 : 1 }}
+            style={{ opacity: loading ? 0.4 : artifact ? 0.4 : 1 }}
+            onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.opacity = '1'; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.opacity = loading ? '0.4' : artifact ? '0.4' : '1'; }}
           >
             <button
               type="button"
@@ -1213,15 +1617,6 @@ export default function Home() {
   );
 }
 
-function FlowDivider() {
-  return (
-    <div className="flex items-center gap-3 py-4">
-      <div className="h-px flex-1 bg-white/10" />
-      <div className="h-px w-12 bg-white/16" />
-      <div className="h-px flex-1 bg-white/10" />
-    </div>
-  );
-}
 
 const SOLVE_STAGES: { key: SolveStage; label: string }[] = [
   { key: 'parsing',    label: 'Parsing' },

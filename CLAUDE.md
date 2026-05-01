@@ -632,6 +632,139 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     showProofDetails is true — Hide proof button remains visible while reading.
   - BUILD_VERSION: "v3.5.2-polish"
 
+✅ Phase 3e-3 — Wedge Animation Sequence ✅ COMPLETE
+  - Two animation paths:
+    Path A (auto-fire, first solve): data parks in pendingAdvancedResult ref,
+      advancedResultReady set true, ~2350ms pure choreography sequence.
+    Path B (manual click): animation starts on button click, real API request
+      runs in parallel, 50ms poll loop in reveal check waits for response.
+  - startWedgeSequence(): line draw (CSS scaleY 0→1, 300ms, 50ms initial delay),
+    answer slides via Framer Motion layout prop (300ms simultaneous), 4 loading
+    messages at 600ms intervals starting at 350ms.
+  - triggerReveal(): commits advancedVerifResult via setAdvancedVerifResult,
+    branches on kind. Discrepancy: header slides in (200ms), result fades (300ms).
+    Confirmed: line retracts (300ms), snaps back with header+result (400ms).
+    Unavailable: line retracts, done at 400ms.
+  - artifactRef tracks current artifact to avoid stale closures in triggerReveal.
+  - wedgeActive (wedgePhase !== idle && !!artifact) gates which JSX path renders.
+  - Badge hidden while wedgeActive; reappears only when done + splitKind null.
+  - Line: amber during loading, transitions to white/8 after reveal.
+  - BUILD_VERSION: "v3.5.3-wedge-anim"
+
+✅ Wolfram Query Normalization ✅ COMPLETE
+  - Root cause of ~90% Wolfram unavailable/could-not-evaluate results:
+    buildWolframQuery() received raw user question and used regex to construct
+    Wolfram queries. Failed for typos, all-caps, unusual phrasing, LaTeX input.
+  - Fix: model generates wolfram_query field in same solution call (zero extra
+    cost, zero extra latency). Model handles all normalization: typos, caps,
+    unusual phrasing, LaTeX — produces clean Wolfram Alpha query syntax.
+  - Critical distinction preserved: wolfram_query targets Wolfram syntax
+    (d/dx[...], ln(x), natural language) — different from normalized_expression
+    which targets math.js syntax (explicit operators, log() for natural log).
+    These cannot share the same normalized form.
+  - wolfram_query field added to math system prompt and user prompt JSON schema.
+    Equations/systems always return null (Tier 1 handles those). All other
+    problem types return Wolfram-ready query string.
+  - inferKindFromQuery() added to wolfram.js — reads the query the model wrote
+    to determine pod lookup kind. Replaces detectOperationKind() in CAS path.
+    detectOperationKind() left in codebase but no longer called in CAS routing.
+  - CAS routing block in index.js fully replaced: uses wolframQuery from
+    structuredSolution.wolfram_query. If null: skips Wolfram, verdict unavailable.
+    If present: calls queryWolfram(wolframQuery, inferKindFromQuery(wolframQuery)),
+    then compareWithWolfram().
+  - BUILD_VERSION: "v3.5.3-wolfram-query"
+
+✅ compareWithWolfram Accuracy Fixes ✅ COMPLETE
+  - Bug 1: Claude's final_answer_latex sometimes written as "A = B"
+    (simplification chain). math.js cannot evaluate an equation — all sample
+    points threw, verdict fell to unavailable. Fix: toMathjs() now extracts
+    RHS via split('=').pop() after stripLatexForWolfram runs. Applied to
+    both Claude's answer and Wolfram's result universally (replaces the old
+    extractRhs parameter that only fired for calc kinds).
+  - Bug 2: Wolfram uses sec(), csc(), cot() — math.js has no these functions.
+    evaluate() threw "Undefined function sec", sample points silently skipped,
+    attemptCount === 0, tryNumericSample returned null → unavailable.
+    Fix: expandTrigShorthands() added at module level in wolfram.js. Expands
+    sec(x)→(1/cos(x)), csc(x)→(1/sin(x)), cot(x)→(cos(x)/sin(x)) before
+    math.js evaluation. Called inside toMathjs() after = extraction.
+    Known limitation: regex only handles single-depth parens — nested args
+    like sec(cos(x)) fall through to unavailable (acceptable, uncommon).
+  - Confirmed fix: "diferentiate ln(x^3)/cos(x)" now returns
+    cas.verdict: "confirmed" where previously it returned "unavailable"
+    despite Wolfram successfully returning a result.
+  - BUILD_VERSION: "v3.5.4-compare-fix"
+
+✅ Polish Brief 01 ✅ COMPLETE
+  - wolfram.js: added .replace(/\)\s+\(/, ')*(') before the existing ')(' rule
+    in stripLatexForWolfram. Handles Wolfram's space-separated implicit mult
+    (") (" with space) that the adjacent ")(" rule missed. Fixes remaining
+    cas.verdict: "unavailable" for trig results with sec/csc/cot + space terms.
+  - Action cluster visibility: ghosts (opacity-0, group-hover:opacity-100)
+    only when splitKind !== null (split is showing). When splitKind === null:
+    always opacity-100 at text-zinc-500. Proof-open exception preserved.
+  - Advanced verification loading messages: "Querying external solver...",
+    "Parsing result...", "Comparing answers...", "Finalising verdict...".
+    Dwell time increased to 1500ms per message (was 600ms). Messages stack
+    and persist until result arrives, then fade together.
+  - Math/Physics tabs: opacity-40 when artifact !== null (solution displayed),
+    full opacity on hover via onMouseEnter/Leave. Full opacity when no artifact.
+    Interactive bookmark tab unaffected.
+  - Solution sections: replaced card borders + FlowDivider with vertical
+    connector line (absolute left-0 w-px bg-white/[0.08]) and step dots
+    (7px rounded-full bg-zinc-700 ring-1 ring-zinc-900). Steps feel
+    continuous and proof-like. FlowDivider component and all instances removed.
+    "Why this works" toggle preserved (renamed "Hide concept" when open).
+  - BUILD_VERSION: "v3.5.5-polish"
+
+✅ Polish Brief 02 — Solution Presentation Pass ✅ COMPLETE
+  - Math + physics system prompts: overview rule updated to require specific
+    expression/values, not just problem type. Examples added to both prompts
+    showing expected specificity ("differentiate sin(x²) using the chain rule"
+    not "differentiation of composite function").
+  - Overview demoted to subtitle: no longer a labeled section. Renders as
+    single text-[12px] text-zinc-600 line directly below answer box (mt-3,
+    no container, no label). Conditional on non-empty string.
+  - Section titles: text-[15px] text-zinc-100 font-medium leading-snug (was
+    text-[13px] text-zinc-200). One step up in size and brightness.
+  - Partial right-side step separators: absolute bottom-0 right-0, h-px,
+    bg-white/[0.04], width calc(100%/6). Between all steps except last.
+  - Compact answer box: outer card py-4 (was py-5). Split columns use
+    min-h-[140px] flex-col items-center justify-center px-5 py-4 (was
+    flex-1 pr-2/pl-2 with no explicit height). items-center on flex row.
+  - Sticky answer bar: IntersectionObserver on answerBoxRef. Fixed bar at
+    left:240px right:0 height:40px z-[25], bg-zinc-950/90 backdrop-blur-sm,
+    border-b white/[0.06]. Contains: 2px color indicator (emerald/amber/
+    zinc-600), InlineMath at 0.85em, split symbol in matching color.
+    translate-y + opacity transition 300ms. Resets on new solve/handleReset.
+  - BUILD_VERSION: "v3.5.8-polish-03b"
+
+✅ Polish Brief 03a — Four Small Fixes ✅ COMPLETE
+  - Explanation text: text-[14px] text-zinc-300 (was text-[13px] text-zinc-400).
+  - Step separators: bg-white/[0.07] (was bg-white/[0.04]). Visible as
+    intentional line rather than invisible artifact.
+  - Overview text: text-[13px] text-zinc-400 (was text-[12px] text-zinc-600).
+  - Concept field prompts (math + physics): updated to instruct explicit
+    component mapping for composition/substitution/multi-part rules. Direct
+    standard derivatives exempt from forced tracing. 2–3 sentence target.
+    Never restate summary_latex. Physics version names specific quantities.
+  - BUILD_VERSION: "v3.5.8-polish-03b"
+
+✅ Polish Brief 03b — Sticky Answer Bar Rethink ✅ COMPLETE
+  - Previous bar (Polish Brief 02) deleted entirely — was visually heavy
+    (backdrop-blur, border-bottom, 40px height, oversized KaTeX).
+  - Rebuilt: h-9 (36px), fixed top-0 left-[240px] right-0, z-[25],
+    bg-zinc-950/75 (no blur, no border), shadow-sm only.
+  - Content: 2px color bar (emerald/amber/zinc-700) → "SOLUTION" label
+    (10px uppercase tracking-widest zinc-500) → separator dot (zinc-700)
+    → InlineMath at 0.82em with display-mode inline overrides → badge pill
+    (10px rounded-full, color-matched). Long answers truncate via
+    overflow-hidden whitespace-nowrap.
+  - Badge pill: "Confirmed" (emerald), "Discrepancy" (amber), "Checked"/
+    "Not verified" (zinc). Derived from splitKind + verification.badge.
+  - State/ref/observer logic (showStickyBar, answerBoxRef,
+    IntersectionObserver) unchanged from Polish Brief 02.
+  - BUILD_VERSION: "v3.5.8-polish-03b"
+
 🔲 Phase 4 — Deployment
 Vercel (frontend) + Railway/Render (backend), domain, meta/OG tags, env-var API URL.
 
@@ -689,28 +822,35 @@ Backend (/backend)
   - artifact.js: extracts graphable/graph_expression from structuredSolution;
     guard forces graphable:false if expression is empty. Writes
     `graph: { graphable, expression }` to artifact at top level.
-  - wolfram.js: three exported functions:
+  - wolfram.js: four exported functions:
       stripLatexForWolfram(latex) — LaTeX to plain math conversion including
         letter→function implicit mult (xsin(→x*sin(), power→letter rule
         (x^2ln→x^2*ln), negative lookbehind protecting ^2( from ^2*(.
-      buildWolframQuery(question, kind) — constructs correct Wolfram query
-        from original question by kind. Returns {query, kind} or null.
+      buildWolframQuery(question, kind) — legacy regex-based query builder.
+        Still in codebase, no longer called in CAS path.
       compareWithWolfram(claudeAnswer, wolframResult, kind) — three-tier:
-        numeric sampling → string normalize → unavailable. Extracts RHS from
-        Wolfram's d/dx(...)=result prefix for calc kinds. Converts ln()→log()
-        for math.js (which uses log() for natural log). Never false-positive.
+        numeric sampling → string normalize → unavailable. toMathjs() helper:
+        strips LaTeX, extracts RHS when expression contains = (handles model
+        writing simplification steps as "A = B"), expands trig shorthands
+        (sec→1/cos, csc→1/sin, cot→cos/sin) via expandTrigShorthands() for
+        math.js compatibility. Converts ln()→log(). Never false-positive.
+        Known limit: expandTrigShorthands regex is single-depth paren only.
+      inferKindFromQuery(query) — reads model-generated query string to determine
+        Wolfram pod lookup kind (differentiation/integration/simplification/equation).
+        Replaces detectOperationKind() in CAS routing.
+  - wolfram_query: model generates Wolfram Alpha-ready query in same solution
+    call (zero extra cost/latency). Targets Wolfram syntax specifically
+    (d/dx[...], ln(x)) — distinct from normalized_expression (math.js syntax).
+    Equations/systems return null; Tier 1 handles those. Extracted in index.js
+    parsing block as wolframQueryFromModel, stored on structuredSolution.
   - physicsAudit.js: LIVE — second Claude call (claude-sonnet-4-5, temp 0.3)
     instructed to use a different physical method. Returns { agrees,
     audit_answer, method, confidence, note, dimensional }. Lightweight unit
     regex for dimensional analysis.
-  - /solve: when advanced:true — math path uses detectOperationKind() to
-    classify question, builds correct Wolfram query via buildWolframQuery(),
-    compares via compareWithWolfram(). Equations skip Wolfram when Tier 1
-    validates. Unknown/expression kinds skip entirely. Physics path calls
-    physicsAudit.js. Both results passed into buildProblemArtifact.
-  - CAS routing (index.js): detectOperationKind() detects differentiation,
-    integration, simplification from question verb. kindMap maps to Wolfram
-    query kind. Equations skip when Tier 1 validates. All skips log reason.
+  - CAS routing (index.js): wolframQuery = structuredSolution.wolfram_query.
+    If null → skip (log reason), verdict unavailable. If present →
+    queryWolfram(wolframQuery, inferKindFromQuery(wolframQuery)) →
+    compareWithWolfram(). Physics path unchanged (uses physicsAudit.js).
   - artifact.js: accepts casResult + auditResult. Writes cas: { verdict,
     wolfram_result, expression_checked, used } and audit: { verdict,
     audit_answer, method, confidence, note, dimensional, used }.
@@ -730,7 +870,7 @@ Backend (/backend)
     outcome. Without audit: "Use Cross-Method Audit for an independent check."
   - Solution model reverted to claude-sonnet-4-5 (founder decision).
   - SOLUTION_MODEL env var allows override. artifact.js cost_meta.model reads from env.
-  - BUILD_VERSION: "v3.5.2-polish"
+  - BUILD_VERSION: "v3.5.8-polish-03b"
 
 Frontend (/frontend/src/app/page.tsx)
   - Next.js + Tailwind + KaTeX + Framer Motion
@@ -782,6 +922,10 @@ Frontend (/frontend/src/app/page.tsx)
     Right column: direct JetBrains Mono rendering (Wolfram returns plaintext
     not valid LaTeX). Null fallback: italic "Result unavailable" in zinc-500.
     Column headers centered. user_reason hidden once advancedVerifResult set.
+    Wedge animation: Path A (auto-fire) parks data in pendingAdvancedResult
+    ref, runs ~2350ms choreography. Path B (manual) starts animation on click,
+    polls for API response at 50ms. artifactRef prevents stale closure in
+    triggerReveal. wedgeActive gates JSX branch.
   - Composer: zIndex dynamic via inline style (isActive ? 20 : 10). Removed
     fixed z-50 class. Active at 20 — above solution content, below graph
     popover (z-40) and left panel (z-30).

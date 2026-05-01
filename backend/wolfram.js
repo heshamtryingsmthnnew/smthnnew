@@ -41,9 +41,24 @@ function stripLatexForWolfram(latex) {
     .replace(/(?<!\^)(\d)([a-zA-Z(])/g, '$1*$2')
     .replace(/(\^\d+)([a-zA-Z])/g, '$1*$2')
     .replace(/([a-zA-Z\)])(\d)/g, '$1*$2')
+    .replace(/\)\s+\(/g, ')*(')
     .replace(/\)\(/g, ')*(');
 
   return s;
+}
+
+/**
+ * Expand trig shorthands that Wolfram uses but math.js does not support.
+ * Must be called after stripLatexForWolfram() has removed LaTeX notation.
+ *
+ * Known limitation: regex only handles single-depth parens — nested args like
+ * sec(cos(x)) will not expand and will fall through to unavailable (acceptable).
+ */
+function expandTrigShorthands(s) {
+  return String(s || '')
+    .replace(/\bsec\(([^)]+)\)/g, '(1/cos($1))')
+    .replace(/\bcsc\(([^)]+)\)/g, '(1/sin($1))')
+    .replace(/\bcot\(([^)]+)\)/g, '(cos($1)/sin($1))');
 }
 
 /**
@@ -182,17 +197,21 @@ function compareWithWolfram(claudeAnswerLatex, wolframResult, kind) {
   const { create, all } = require('mathjs');
   const math = create(all);
 
-  function toMathjs(latex, extractRhs = false) {
+  function toMathjs(latex) {
     let s = String(latex || '');
     // Strip integration constant before comparing
     s = s.replace(/\+\s*C\b/gi, '').replace(/\+\s*constant\b/gi, '');
-    // For differentiation/integration, Wolfram prefixes result with "d/dx(...) = " or "integral ... = "
-    // Extract only the RHS (the actual expression to compare)
-    if (extractRhs && s.includes('=')) {
+    // Strip LaTeX environments and convert to plain math
+    s = stripLatexForWolfram(s);
+    // If the expression is an equation (A = B), extract the RHS — the final form.
+    // Handles model writing simplification steps as "intermediate = final", and
+    // Wolfram prefixing results with "d/dx(...) =" or "integral ... =".
+    if (s.includes('=')) {
       s = s.split('=').pop().trim();
     }
-    s = stripLatexForWolfram(s);
-    // math.js uses log() for natural log, not ln() — convert after Wolfram stripping
+    // Expand trig shorthands that math.js doesn't support
+    s = expandTrigShorthands(s);
+    // math.js uses log() for natural log, not ln() — convert after stripping
     s = s.replace(/\bln\(/g, 'log(');
     return s;
   }
@@ -229,10 +248,8 @@ function compareWithWolfram(claudeAnswerLatex, wolframResult, kind) {
     return null;                                   // Partial match — inconclusive
   }
 
-  // For differentiation/integration, Wolfram includes "d/dx(...) =" or "integral ... =" prefix
-  const extractRhs = kind === 'differentiation' || kind === 'integration';
-  const claudeClean = toMathjs(claudeAnswerLatex, false);
-  const wolframClean = toMathjs(wolframResult, extractRhs);
+  const claudeClean = toMathjs(claudeAnswerLatex);
+  const wolframClean = toMathjs(wolframResult);
 
   // Tier A: numeric sampling
   const numericResult = tryNumericSample(claudeClean, wolframClean);
@@ -250,4 +267,21 @@ function compareWithWolfram(claudeAnswerLatex, wolframResult, kind) {
   return 'unavailable';
 }
 
-module.exports = { queryWolfram, buildWolframQuery, compareWithWolfram };
+/**
+ * Infer Wolfram query kind from the query string the model generated.
+ * The model writes the query, so we read what it wrote to determine the kind.
+ * This is reliable because we control the output format via the prompt.
+ */
+function inferKindFromQuery(query) {
+  const q = String(query || '').toLowerCase().trim();
+
+  if (q.startsWith('d/dx') || q.includes('derivative')) return 'differentiation';
+  if (q.startsWith('integrate') || q.startsWith('integral of') || q.startsWith('antiderivative')) return 'integration';
+  if (q.startsWith('simplify') || q.startsWith('expand') || q.startsWith('factor')) return 'simplification';
+  if (q.startsWith('solve') || (q.includes('=') && !q.startsWith('d/dx'))) return 'equation';
+
+  // Default: simplification — Wolfram returns Result pod for most bare expressions
+  return 'simplification';
+}
+
+module.exports = { queryWolfram, buildWolframQuery, compareWithWolfram, inferKindFromQuery };

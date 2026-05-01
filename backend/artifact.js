@@ -405,6 +405,15 @@ const certainty = mapVerificationToCertainty(
 
   const suggestions = buildSuggestions(reasonCode);
 
+  // Guard: reject final_answer_latex that looks like leaked JSON (model failed to parse its own output)
+  const rawFinalAnswer = typeof structuredSolution?.final_answer_latex === 'string'
+    ? structuredSolution.final_answer_latex.trim()
+    : '';
+  const finalAnswerIsClean = rawFinalAnswer.length > 0
+    && !rawFinalAnswer.startsWith('{')
+    && !rawFinalAnswer.startsWith('[')
+    && !rawFinalAnswer.includes('"final_answer_latex"');
+
   let graphable = structuredSolution?.graphable === true;
   const graphExpression = typeof structuredSolution?.graph_expression === 'string'
     ? structuredSolution.graph_expression.trim()
@@ -418,8 +427,7 @@ const certainty = mapVerificationToCertainty(
 
   const solution =
     structuredSolution &&
-    typeof structuredSolution.final_answer_latex === "string" &&
-    structuredSolution.final_answer_latex.length > 0 &&
+    finalAnswerIsClean &&
     Array.isArray(structuredSolution.sections) &&
     structuredSolution.sections.length > 0
       ? {
