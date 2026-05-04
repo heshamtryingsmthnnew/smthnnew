@@ -1,13 +1,24 @@
 require("dotenv").config();
 const express = require('express');
 const cors = require('cors');
+const multer = require('multer');
 const Anthropic = require('@anthropic-ai/sdk');
 const { create, all } = require('mathjs');
 const { buildProblemArtifact } = require('./artifact');
 const { queryWolfram, compareWithWolfram, inferKindFromQuery } = require('./wolfram');
+const { logCasEvent } = require('./casLogger');
 const { runPhysicsAudit } = require('./physicsAudit');
 
-const BUILD_VERSION = "v3.5.8-polish-03b";
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    cb(null, allowed.includes(file.mimetype));
+  },
+});
+
+const BUILD_VERSION = "v3.9.3-polish-08";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
@@ -1521,23 +1532,8 @@ function detectMixedProseInput(input) {
   return hasMath && hasProseWords && wordCount > 4;
 }
 
-function detectOperationKind(question) {
-  const q = String(question || '').trim().toLowerCase();
-  if (/^(differentiate|find\s+(?:the\s+)?derivative\s+of|d\/dx\s+of)\b/.test(q)) {
-    return 'differentiation';
-  }
-  if (/^(integrate|find\s+(?:the\s+)?integral\s+of|antiderivative\s+of)\b/.test(q)) {
-    return 'integration';
-  }
-  if (/^(simplify|expand|factor)\b/.test(q)) {
-    return 'simplification';
-  }
-  return null;
-}
-
 app.post('/solve', async (req, res) => {
-  const { question: rawInput, mode, advanced } = req.body;
-  const isAdvanced = advanced === true;
+  const { question: rawInput, mode } = req.body;
 
   if (!rawInput) {
     return res.status(400).json({ error: 'No question provided' });
@@ -1572,8 +1568,8 @@ Rules:
     "integrate x²sin(x) by parts, letting u = x² and dv = sin(x)dx" NOT "integration using integration by parts"
   Be specific. The student already knows what type of problem this is — tell them what was done to this particular input.
 - normalized_expression: plain math notation only — no LaTeX environments, no \\begin{cases}, no \\text{}. For systems, separate with semicolons: "2x + y = 7; x - y = 1". Single equations as-is.
-- graphable: true if the problem involves a plottable function, curve, or inequality, or if a graph would reveal something structurally meaningful about the result (roots, shape, solution region). Otherwise false.
-- graph_expression: if graphable, a single Desmos-ready expression string (e.g. "y=x^2-5x+6"). Empty string if not graphable.
+- graphable: true ONLY if the result is an explicit function y=f(x), a parametric curve, or an inequality that Desmos can plot directly. Set false for: derivatives (dy/dx = ...), implicit expressions involving both x and y in the result, piecewise functions, vector results, matrices, and anything that is not a single Desmos-ready plotted curve. When in doubt, set false.
+- graph_expression: if graphable, the exact Desmos-ready string (e.g. "y=x^2-5x+6", "x^2+y^2=25", "y=sin(x)"). Empty string if graphable is false.
 - wolfram_query: a Wolfram Alpha-ready query string for this problem. This is different from normalized_expression — it must use Wolfram's query syntax, not math.js syntax. Examples:
     "differentiate x^3 * ln(x)" → "d/dx[x^3 * ln(x)]"
     "DIFERENTIATE X^3 LNX" → "d/dx[x^3 * ln(x)]"
@@ -1583,7 +1579,10 @@ Rules:
     "factor x^2 - 5x + 6" → "factor x^2 - 5x + 6"
     "x^2 - 5x + 6 = 0" → null
     "2x + y = 7; x - y = 1" → null
+    "implicitly differentiate x^2 + y^2 = 25" → "implicitly differentiate x^2 + y^2 = 25 with respect to x"
+    "find dy/dx for sin(xy) = x + y" → "implicitly differentiate sin(x*y) = x + y with respect to x"
   For equations and systems: always return null. Tier 1 handles those deterministically.
+  Implicit differentiation exception: if the problem asks to differentiate an equation implicitly (e.g. "differentiate x^2 + y^2 = 25 implicitly", "find dy/dx for x^2 + y^2 = 1"), return a Wolfram query of the form "implicitly differentiate x^2 + y^2 = 25 with respect to x". Wolfram handles this natively. Do NOT return null for implicit differentiation.
   For everything else: return the Wolfram Alpha query string that would retrieve the correct result for this operation. Handle typos, all-caps, unusual phrasing, and LaTeX input — normalize them all to clean Wolfram syntax.`;
       temperature = 0.2;
     } else {
@@ -1622,7 +1621,7 @@ Mode: ${safeMode}`;
 
       const message = await client.messages.create({
         model: SOLUTION_MODEL,
-        max_tokens: 2048,
+        max_tokens: 1200,
         temperature,
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
@@ -1696,8 +1695,8 @@ Rules:
     "find the current through a 4Ω resistor connected to a 12V battery using Ohm's law" NOT "applying Ohm's law to a resistive circuit"
   Be specific to the given problem, not generic to the problem type.
 - normalized_expression: the core governing equation in plain notation, no LaTeX environments.
-- graphable: true if the problem involves a quantity that varies over a parameter (time, position, angle) and a graph would reveal something physically meaningful (trajectory, velocity profile, force curve). Otherwise false.
-- graph_expression: if graphable, a single Desmos-ready expression string. Empty string if not graphable.
+- graphable: true ONLY if the result is an explicit function y=f(x), a parametric curve, or an inequality that Desmos can plot directly. Set false for: derivatives (dy/dx = ...), implicit expressions involving both x and y in the result, piecewise functions, vector results, matrices, and anything that is not a single Desmos-ready plotted curve. When in doubt, set false.
+- graph_expression: if graphable, the exact Desmos-ready string (e.g. "y=x^2-5x+6", "x^2+y^2=25", "y=sin(x)"). Empty string if graphable is false.
 - Never use "Step 1", "Step 2", etc. in titles or explanations.`;
 
       const physicsUserPrompt = `Solve the following physics problem and return a JSON object with this exact structure:
@@ -1722,7 +1721,7 @@ Mode: physics`;
 
       const physicsMessage = await client.messages.create({
         model: SOLUTION_MODEL,
-        max_tokens: 2048,
+        max_tokens: 1200,
         temperature,
         system: physicsSystemPrompt,
         messages: [{ role: 'user', content: physicsUserPrompt }],
@@ -1820,56 +1819,7 @@ Mode: physics`;
       payload: normalizedExpression || normalized.payload,
     };
 
-    // Advanced verification: Wolfram CAS for math, AI audit for physics
-    let casResult = null;
-    let auditResult = null;
-
-    if (isAdvanced) {
-      if (safeMode === 'math') {
-        // CAS routing — use model-generated wolfram_query when available.
-        // Model handles all normalization: typos, caps, unusual phrasing, LaTeX input.
-        const wolframQuery = structuredSolution.wolfram_query || null;
-
-        if (wolframQuery) {
-          const wolframKind = inferKindFromQuery(wolframQuery);
-          console.log('[CAS] Model-generated query:', wolframQuery);
-          console.log('[CAS] Inferred kind:', wolframKind);
-
-          const wolframResult = await queryWolfram(wolframQuery, wolframKind);
-          console.log('[CAS] Wolfram result:', wolframResult.result);
-
-          let verdict = 'unavailable';
-          if (wolframResult.success && wolframResult.result) {
-            verdict = compareWithWolfram(
-              structuredSolution.final_answer_latex,
-              wolframResult.result,
-              wolframKind
-            );
-          }
-
-          casResult = {
-            verdict,
-            wolfram_result: wolframResult.result || null,
-            expression_checked: wolframQuery,
-          };
-        } else {
-          // No wolfram_query from model — equation/system (Tier 1 handles) or model returned null
-          console.log('[CAS] No wolfram_query from model — skipping Wolfram');
-          casResult = {
-            verdict: 'unavailable',
-            wolfram_result: null,
-            expression_checked: null,
-          };
-        }
-      } else {
-        // Physics: AI audit via different method
-        console.log('[Audit] Running physics audit...');
-        const auditRaw = await runPhysicsAudit(question, structuredSolution);
-        auditResult = { ...auditRaw, used: true };
-        console.log('[Audit] Result:', auditResult.agrees, auditResult.method);
-      }
-    }
-
+    // CAS and audit now run in the /verify endpoint — not here
     const artifact = buildProblemArtifact({
       question,
       mode: safeMode,
@@ -1880,9 +1830,9 @@ Mode: physics`;
       verification,
       llmCalls: 1,
       normalizedUsed,
-      advancedVerificationUsed: isAdvanced,
-      casResult,
-      auditResult,
+      advancedVerificationUsed: false,
+      casResult: null,
+      auditResult: null,
     });
 
     res.json({
@@ -1905,6 +1855,75 @@ Mode: physics`;
       structuredSolution: null,
       artifact: null,
     });
+  }
+});
+
+// ---- /verify — CAS (math) or audit (physics) decoupled from /solve ----
+app.post('/verify', async (req, res) => {
+  const { mode, wolfram_query, final_answer_latex, question, structured_solution } = req.body;
+  const safeMode = mode === 'physics' ? 'physics' : 'math';
+
+  try {
+    if (safeMode === 'math') {
+      if (!wolfram_query || !final_answer_latex) {
+        return res.json({
+          cas: { verdict: 'unavailable', wolfram_result: null, expression_checked: null, used: true }
+        });
+      }
+
+      const wolframKind = inferKindFromQuery(wolfram_query);
+      console.log('[/verify] wolfram_query:', wolfram_query);
+      console.log('[/verify] kind:', wolframKind);
+
+      const wolframResult = await queryWolfram(wolfram_query, wolframKind);
+      console.log('[/verify] wolfram result:', wolframResult.result);
+
+      let verdict = 'unavailable';
+      if (wolframResult.success && wolframResult.result) {
+        verdict = await compareWithWolfram(final_answer_latex, wolframResult.result, wolframKind);
+      }
+
+      const casResult = {
+        verdict,
+        wolfram_result: wolframResult.result || null,
+        expression_checked: wolfram_query,
+        used: true,
+      };
+
+      logCasEvent({
+        build_version: BUILD_VERSION,
+        question: question || '',
+        mode: safeMode,
+        wolfram_query: wolfram_query || null,
+        wolfram_kind: wolframKind,
+        wolfram_success: !!(wolframResult.result),
+        wolfram_result: wolframResult.result || null,
+        claude_answer: final_answer_latex || '',
+        verdict,
+      });
+
+      return res.json({ cas: casResult });
+
+    } else {
+      if (!question || !structured_solution) {
+        return res.json({
+          audit: { agrees: false, audit_answer: null, method: null,
+                   confidence: 'low', note: null, dimensional: false, used: true }
+        });
+      }
+
+      console.log('[/verify] Running physics audit...');
+      const auditRaw = await runPhysicsAudit(question, structured_solution);
+      return res.json({ audit: { ...auditRaw, used: true } });
+    }
+
+  } catch (err) {
+    console.error('[/verify] error:', err.message);
+    const fallback = safeMode === 'math'
+      ? { cas: { verdict: 'unavailable', wolfram_result: null, expression_checked: null, used: true } }
+      : { audit: { agrees: false, audit_answer: null, method: null,
+                   confidence: 'low', note: null, dimensional: false, used: true } };
+    return res.json(fallback);
   }
 });
 
@@ -1970,6 +1989,69 @@ function runValidationTests() {
 
   console.log("=== TESTS COMPLETE ===");
 }
+
+// ---- /extract-problem — vision-based problem extraction from image ----
+app.post('/extract-problem', upload.single('image'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No image file provided' });
+  }
+
+  const systemPrompt = `You are a math problem extractor. Your only job is to read an image and extract math problems from it.
+
+Rules:
+- Extract only math/physics/engineering problems. Ignore all other text.
+- Return each problem as a clean, self-contained statement suitable for a math solver.
+- Preserve mathematical notation but write it in plain text (x^2 not x², sqrt(x) not √x).
+- Do not solve anything. Do not explain. Only extract.
+- If there are no math problems in the image, return an empty array.
+- Return ONLY a JSON array of strings. No other text. No markdown fences.
+
+Example (one problem): ["differentiate x^3 * ln(x)"]
+Example (multiple): ["integrate sin(x) dx", "solve x^2 - 5x + 6 = 0"]
+Example (no math): []`;
+
+  const base64Image = req.file.buffer.toString('base64');
+  const mediaType = req.file.mimetype;
+
+  try {
+    const response = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 512,
+      system: systemPrompt,
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'image',
+          source: { type: 'base64', media_type: mediaType, data: base64Image },
+        }],
+      }],
+    });
+
+    const rawText = response.content?.[0]?.text?.trim() || '';
+    const cleaned = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let problems = [];
+    try {
+      const parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed)) {
+        problems = parsed.filter(p => typeof p === 'string' && p.trim().length > 0);
+      }
+    } catch {
+      console.warn('[extract-problem] Non-JSON response:', rawText.slice(0, 100));
+    }
+
+    if (problems.length === 0) {
+      return res.json({ mode: 'none', message: 'No math problems found in this image.' });
+    }
+    if (problems.length === 1) {
+      return res.json({ mode: 'single', problem: problems[0] });
+    }
+    return res.json({ mode: 'multiple', problems });
+  } catch (err) {
+    console.error('[extract-problem] Error:', err.message);
+    res.status(500).json({ error: 'Failed to extract problems from image.' });
+  }
+});
 
 if (process.env.RUN_VALIDATION_TESTS === "true") {
   runValidationTests();

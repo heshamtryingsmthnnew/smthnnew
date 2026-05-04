@@ -765,6 +765,224 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     IntersectionObserver) unchanged from Polish Brief 02.
   - BUILD_VERSION: "v3.5.8-polish-03b"
 
+✅ CAS Observability — Phase 1 of comparison-layer rebuild ✅ COMPLETE
+  - Root motivation: compareWithWolfram has accreted six fix passes of regex
+    rules. Cases do not converge. Real production failure data required before
+    any further redesign. Test harness deferred to Phase 2.
+  - backend/casLogger.js: new module. logCasEvent(event) appends JSONL to
+    backend/logs/cas-events.jsonl. Directory created on module load via
+    mkdirSync recursive. Synchronous appendFileSync. Write failures logged
+    to console, never thrown — CAS path unaffected by logger failures.
+  - backend/index.js: logCasEvent called at end of math-mode CAS branch,
+    both success and skip paths. Skip path logged with wolfram_success:false,
+    wolfram_result:null, verdict:unavailable (intentional — measures model
+    null-query rate).
+  - Event schema: timestamp, build_version, question, mode, wolfram_query,
+    wolfram_kind, wolfram_success, wolfram_result, claude_answer, verdict,
+    numeric_attempts (null — Phase 2), numeric_matches (null — Phase 2).
+  - backend/scripts/read-cas-log.js: utility reader. Total count, verdict
+    breakdown, kind breakdown, last N events with truncated fields.
+    Node stdlib only. Skips malformed lines without crashing.
+  - backend/logs/ added to backend/.gitignore.
+  - compareWithWolfram, prompts, schema, model calls, frontend: all unchanged.
+  - Phase 2 (regression harness) blocked on real captured data.
+  - BUILD_VERSION: "v3.6.0-cas-compare-rebuild"
+
+✅ CAS Comparison Rebuild — Phase 2: harness + model equivalence tier ✅ COMPLETE
+  - Harness: backend/wolfram_compare_test.js — 10 test cases covering WORKING,
+    B1 (inverse trig), B2 (log as ln), B3 (nested trig), CORRECT_DISCREPANCY,
+    CORRECT_UNAVAILABLE. Loads dotenv for API key. Run with
+    node backend/wolfram_compare_test.js.
+  - Baseline before changes: 6/10 (B1: 0/2, B2: 0/2).
+  - compareWithWolfram: now async. Two fixes beyond the brief:
+    (a) Markdown fence stripping — model wraps JSON in ```json``` blocks,
+        stripped before JSON.parse.
+    (b) Space-separated implicit mult in toMathjs() — Wolfram outputs
+        "x^2 log(x)" with space; three targeted replace rules added for
+        ^N-space-letter, digit-space-func(), letter-space-func() patterns.
+  - String normalization tier (old Tier B) removed entirely.
+  - Model equivalence tier: checkEquivalenceWithModel() calls
+    claude-haiku-4-5-20251001, temperature 0, 8s timeout, strict JSON.
+    Handles B1, B2, B3, algebraic equivalence. All failures degrade to unavailable.
+  - Sample points expanded from 3 to 5 in tryNumericSample.
+  - Final harness: 10/10 (all categories passing).
+  - index.js: compareWithWolfram call updated to await.
+  - casLogger.js: verdict_tier: null placeholder added for Phase 3.
+  - BUILD_VERSION: "v3.6.0-cas-compare-rebuild"
+
+✅ UI Polish Brief 04 — Identity Pass ✅ COMPLETE
+  - Section layout: reordered to title → explanation → equation. Equation
+    container gets pl-4 border-l border-white/[0.06] indent treatment —
+    reads as derived result rather than preamble. Same border-l language
+    as step connector line.
+  - Answer box: min-h confirmed absent from single-answer path. Card height
+    is content-sized. Split view min-h-[140px] on columns preserved.
+  - Overview: text-[14px] leading-6 text-zinc-200 font-medium. Reads at
+    same visual tier as section titles.
+  - Logo: pl-3 added to wordmark button — aligns left edge with sidebar
+    nav items (Home, Profile, etc.).
+  - Grain texture: fixed inset-0 z-0 SVG feTurbulence overlay at opacity
+    0.028. Always present. fractalNoise baseFrequency 0.65, 3 octaves,
+    saturate 0. Adds material depth without adding color or pattern.
+  - Line motif extended to three locations:
+    (1) Input focus accent: absolute left-0 1px amber line inside composer
+        container, opacity-40 on focus via inputFocused state. onFocus/onBlur
+        wired to textarea. Matches wedge line visual language.
+    (2) Slogan underline: 1px w-8 centered horizontal line below "The answer,
+        and the proof." at bg-white/20. Marks slogan as unit.
+    (3) Sidebar bottom section: border-t border-white/[0.06] on the mt-auto
+        container div, pt-3 for spacing. Separate border div removed.
+  - BUILD_VERSION: "v3.7.0-identity"
+
+✅ UI Polish Brief 05 — Split Fix + Rail Pattern ✅ COMPLETE
+  - Split height alignment: items-start → items-center on two-column container.
+    Both columns now vertically center their content. Divider line and =/≠
+    symbol align with midpoint of both expressions.
+  - Wolfram result display: RHS extraction — raw pod plaintext for diff/integral
+    included d/dx(...) = prefix. Now splits on '=' and takes last segment for
+    display. wolframDisplay computed inline before return. Applied to both
+    static split path and wedge path. KaTeXBoundary wraps right column in
+    both paths: attempts BlockMath at 1.1em, falls back to JetBrains Mono
+    text-sm on parse failure.
+  - Amber input accent removed: inputFocused state, onFocus/onBlur handlers,
+    and absolute amber line element all removed from composer.
+  - Grain opacity: 0.028 → 0.055. Visible as material texture.
+  - Left rail pattern: vertical stripe SVG data URI on sidebar aside element.
+    1px white stripe every 12px, rgba(255,255,255,0.03). backgroundRepeat
+    repeat-x, backgroundSize 12px 100%. h-full replaces h-screen.
+    border-white/[0.06] (was 0.08).
+  - Slogan underline (from Polish Brief 04) preserved.
+  - BUILD_VERSION: "v3.7.2-polish-05"
+
+✅ Performance + Wolfram Coverage Brief ✅ COMPLETE
+  - max_tokens: 2048 → 1200 on both math and physics solve calls. Eliminates
+    tail latency from reserving unused token window.
+  - CAS decoupled from /solve: isAdvanced block removed entirely. New POST
+    /verify endpoint accepts { mode, wolfram_query, final_answer_latex,
+    question, structured_solution } and runs CAS (math) or audit (physics)
+    independently. casLogger call moved to /verify.
+  - artifact.js: wolfram_query added to solution object in artifact output.
+    Frontend reads this to pass to /verify without re-running the model.
+  - Frontend: /solve always called without advanced flag — { question, mode }
+    only. After solve returns and artifact renders, shouldAutoFire triggers
+    background /verify call (not awaited — answer visible immediately).
+    mergedArtifact constructed from solveArtifact + verifyData, parked in
+    pendingAdvancedResult.current. advancedResultReady set on response or
+    catch (no-op result on failure). Manual advanced verify button updated
+    to call /verify instead of /solve+advanced:true, same merge logic.
+  - Artifact TypeScript type: wolfram_query: string | null added to solution.
+  - /solve call uses NEXT_PUBLIC_API_URL env var (with localhost fallback).
+  - Wolfram limit support: inferKindFromQuery detects lim/limit queries →
+    returns 'limit'. podTargets.limit: ['Limit', 'Value', 'Limit result'].
+  - Wolfram implicit differentiation: math system prompt updated with carve-out
+    and two examples. inferKindFromQuery detects implicit/implicitly/dy/dx+= →
+    returns 'differentiation' (Derivative pod). Before equation check.
+  - compareWithWolfram toMathjs(): ∞ and 'infinity' → 'Infinity' added
+    immediately after integration constant stripping.
+  - BUILD_VERSION: "v3.8.0-perf-wolfram"
+
+✅ Polish Brief 06 — Fixes + Sidebar Collapse ✅ COMPLETE
+  - Wolfram implicit_differentiation: new kind in inferKindFromQuery (detects
+    'implicit'/'implicitly'/dy/dx+eq). podTargets.implicit_differentiation:
+    ['Result', 'Derivative', 'Derivative of input']. Targets Result pod first
+    (where Wolfram places implicit diff answer). Check added before plain
+    differentiation check.
+  - Graph prompt tightened: graphable:true restricted to explicit y=f(x),
+    parametric, or direct inequalities only. Explicit false for derivatives,
+    implicit expressions, piecewise. Same restriction applied to physics prompt.
+    artifact.js guard added for dy/dx and unresolved implicit expressions
+    (expression contains dy/dx, or dy, or = with both x and y and doesn't
+    start with y=). graphExpression changed from const to let.
+  - Answer box height: outer card py-4 → py-5. min-h-[140px] already isolated
+    inside splitKind !== null conditional (no further change needed).
+  - Sidebar collapse: sidebarCollapsed state. Width 240→56px on toggle via
+    inline style (transition-all duration-200). Ergo.→E. when collapsed. Nav
+    labels hidden, icons centered (justify-center px-0 vs gap-3 px-3).
+    Sessions section hidden when collapsed. Chevron toggle button top-right of
+    sidebar header row. sidebarWidth + contentOffset computed vars update
+    sticky bar left, slogan left, main content marginLeft, dot pattern left,
+    and composer left/width dynamically.
+  - Advanced verification: RUN_ADVANCED_VERIFICATION chip now highlights the
+    Advanced verification button (ring-1 ring-white/20, text-zinc-100, 2s
+    pulse via setTimeout) instead of firing separately. advancedVerifFired
+    state — button disabled+opacity-40 after firing, resets on new solve.
+    Disabled condition changed from !!advancedVerifResult to advancedVerifFired.
+  - Scrollbar: scrollbar-width:none + -ms-overflow-style:none +
+    ::-webkit-scrollbar {display:none} in globals.css. Scroll still works.
+  - Dot matrix: rgba opacity 0.08→0.28, radius 1px→1.5px. Perceptibly
+    visible in idle state.
+  - Sidebar corner accent: absolute bottom-0 left-0 h-20 w-20 div with SVG
+    diagonal crosshatch data URI at rgba(255,255,255,0.07). maskImage radial
+    gradient fades from corner. Replaces full-width vertical stripe from
+    Polish Brief 04/05 — backgroundImage on aside element removed.
+  - BUILD_VERSION: "v3.9.0-polish-06"
+
+✅ Polish Brief 07 — Sidebar Hover-Peek + Display Fixes ✅ COMPLETE
+  - Sidebar hover-peek: sidebarCollapsed + sidebarPeeking states.
+    sidebarOpen = !sidebarCollapsed || sidebarPeeking. Toggle button (panel
+    icon SVG — rect+line) visible only when !sidebarCollapsed. Collapsed →
+    button gone, no expand button shown. onMouseEnter when collapsed:
+    sidebarPeeking=true (expands visually to w-60). onMouseLeave: resets to
+    false. Click while peeking: setSidebarCollapsed(false) + setSidebarPeeking(false)
+    → locks open. cursor-pointer on aside when peeking. stopPropagation on
+    all inner buttons to avoid triggering aside onClick. Logo E./Ergo., nav
+    labels, sessions section, bottom labels all conditioned on sidebarOpen.
+    sidebarWidth = sidebarOpen ? 240 : 56. All dependent elements (sticky bar
+    left, slogan, main content marginLeft, dot pattern left, composer left/width)
+    track sidebarWidth dynamically.
+  - Dot matrix: rgba(255,255,255,0.28) 1.5px → rgba(255,255,255,0.18) 1px.
+    Ambient texture, not foreground pattern.
+  - advancedVerifFired: set true only in handleAdvancedVerification (manual
+    click path). Auto-fire background /verify path confirmed not setting it.
+    Button greys only after explicit user action.
+  - Bottom frame: mb-1 added to answer card outer div. Creates 4px gap below
+    card so bottom border reads as frame below the split view.
+  - Overview separator: h-px bg-white/[0.05] mt-4 mb-2 div between overview
+    and sections. Conditional on both overview and sections being non-empty.
+    mt-4 on section container reduced to mt-2 (separator provides spacing).
+  - Wolfram log→ln: wolframDisplay adds .replace(/\blog\(/g, 'ln(') after RHS
+    extraction. Display-only — compareWithWolfram logic unchanged.
+  - BUILD_VERSION: "v3.9.1-polish-07"
+
+✅ Image Upload — Single Problem Extraction ✅ COMPLETE
+  - POST /extract-problem: multer memory storage, 10MB limit, image/* only.
+    Calls claude-haiku-4-5-20251001 with vision. Extracts problems as JSON
+    array. Returns mode: single/multiple/none. multer added to package.json.
+  - Single: drops directly into question state. Multiple: disambiguation UI
+    replaces textarea — user picks one, drops into question state. None:
+    inline error auto-clears after 4s.
+  - Disambiguation prompt: "Found N problems — which one would you like to
+    solve?" with one button per problem. Cancel returns to normal composer.
+  - Upload icon button wired to hidden file input (accept image/jpeg,png,gif,webp).
+    imageExtracting drives spinner animation. extractedProblems drives
+    disambiguation view. extractError drives inline error text below composer.
+  - attachedFile state removed entirely — replaced by extraction flow.
+  - Image never stored — memory only for duration of extraction call.
+  - Solve flow, verification, and all existing logic unchanged.
+  - BUILD_VERSION: "v3.9.2-image-upload"
+
+✅ Polish Brief 08 — Frame, Ghost Fix, Image Drop/Paste ✅ COMPLETE
+  - shouldGhost: wedgePhase === 'done' && splitKind !== null. Replaces all
+    previous splitKind !== null ghost conditions. Correct semantic gate —
+    framing and ghosting only active after full wedge sequence completes.
+  - Split bottom frame: border-b border-white/[0.06] pb-3 on split columns
+    container (gated on shouldGhost). border-t border-white/[0.06] pt-3 mt-0
+    on action cluster (gated on shouldGhost). Split reads as framed unit.
+  - Ghost fix: wedgePhase resets to 'idle' in doSolve. Subsequent solves
+    never ghost until a new verification sequence runs to completion.
+  - handleImageFile(file): extracted from handleImageUpload. Shared by file
+    input onChange, onPaste, and onDrop handlers. Type validation added
+    (unsupported type surfaces extractError). No logic duplication.
+  - Paste: onPaste on textarea. Checks clipboardData.items for image/*.
+    Calls handleImageFile on first match. Non-image paste passes through.
+  - Drag-drop: onDragOver/onDragLeave/onDrop on composer container div.
+    isDraggingOver state. onDragLeave uses relatedTarget containment check.
+    border-white/[0.10] → border-white/[0.20] during drag (150ms transition).
+  - Overlay: absolute inset-0 z-10 pointer-events-none, shown when
+    isDraggingOver. Upload icon + "Drop image here" + extraction subtitle.
+    bg-zinc-950/95 — textarea faintly visible underneath.
+  - BUILD_VERSION: "v3.9.3-polish-08"
+
 🔲 Phase 4 — Deployment
 Vercel (frontend) + Railway/Render (backend), domain, meta/OG tags, env-var API URL.
 
@@ -870,7 +1088,12 @@ Backend (/backend)
     outcome. Without audit: "Use Cross-Method Audit for an independent check."
   - Solution model reverted to claude-sonnet-4-5 (founder decision).
   - SOLUTION_MODEL env var allows override. artifact.js cost_meta.model reads from env.
-  - BUILD_VERSION: "v3.5.8-polish-03b"
+  - casLogger.js: logCasEvent() appends JSONL to backend/logs/cas-events.jsonl.
+    Directory created on load. Sync write, failures swallowed. Phase 2 fields
+    (numeric_attempts, numeric_matches) present as null placeholders.
+  - scripts/read-cas-log.js: reads cas-events.jsonl, prints verdict/kind
+    breakdowns + last N events. Node stdlib only.
+  - BUILD_VERSION: "v3.6.0-cas-compare-rebuild"
 
 Frontend (/frontend/src/app/page.tsx)
   - Next.js + Tailwind + KaTeX + Framer Motion
@@ -946,6 +1169,34 @@ Frontend (/frontend/src/app/page.tsx)
   - Artifact type: cas?, audit?, graph? all unchanged.
   - Certainty dot suppressed when badge === "checked".
   - Action cluster physics button: "Cross-method audit".
+  - Grain texture: fixed inset-0 z-0 SVG feTurbulence overlay at opacity 0.028.
+    Always present under all content. fractalNoise 0.65 baseFrequency, 3 octaves.
+  - Grain texture: fixed inset-0 z-0 SVG feTurbulence overlay at opacity 0.028.
+  - Logo: pl-3 on wordmark button aligns left edge with Home/nav items.
+  - inputFocused state: boolean, wired to textarea onFocus/onBlur. Drives
+    absolute amber 1px focus line on left edge of composer container.
+  - Slogan underline: h-px w-8 mx-auto mt-3 bg-white/20 below slogan text.
+  - Sidebar bottom section: border-t border-white/[0.06] pt-3 on mt-auto
+    container. Separate border div removed.
+  - Section layout: reordered to title → explanation → equation. Equation
+    container: py-2 pl-4 border-l border-white/[0.06].
+  - Overview: text-[14px] leading-6 font-medium text-zinc-200.
+  - wolframDisplay: computed from advancedVerifResult.cas.wolfram_result;
+    strips prefix up to and including last '=' for clean RHS display.
+    Applied to both static split and wedge paths via KaTeXBoundary.
+  - Wedge two-column body: items-center (was items-start).
+  - Sidebar: vertical stripe SVG data URI, 1px/12px, rgba(255,255,255,0.03).
+    Grain opacity raised to 0.055. Amber focus accent removed entirely.
+  - max_tokens: 1200 (both model calls). /solve no longer runs CAS/audit.
+  - New POST /verify endpoint: CAS (math) or physics audit independently.
+    casLogger moved to /verify. logCasEvent called on every /verify math call.
+  - artifact.js: wolfram_query in solution output. Frontend Artifact type updated.
+  - doSolve: /solve called without advanced flag. shouldAutoFire fires background
+    /verify, merges result into pendingAdvancedResult. runAdvancedVerification
+    calls /verify. Both use NEXT_PUBLIC_API_URL env var.
+  - wolfram.js: limit kind (podTargets + inferKindFromQuery), implicit diff →
+    differentiation kind. toMathjs: infinity normalization (∞ → Infinity).
+  - BUILD_VERSION: "v3.9.3-polish-08"
 ```
 
 ## 11a. What Claude Code Should Never Do

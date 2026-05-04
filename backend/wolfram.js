@@ -62,50 +62,75 @@ function expandTrigShorthands(s) {
 }
 
 /**
- * Build a Wolfram Alpha query from the original question.
- * Returns { query: string, kind: string } or null if unsupported.
+ * Ask the model whether two math expressions are mathematically equivalent.
+ * Returns 'confirmed' | 'discrepancy' | 'unavailable'
  *
- * kind values:
- *   'differentiation' → d/dx[...] query
- *   'integration'     → integrate ... query (constant C stripped)
- *   'simplification'  → bare expression (Wolfram handles natively)
- *   'equation'        → solve ... (only when Tier 1 unavailable)
+ * Uses claude-haiku for cost efficiency. Temperature 0 — deterministic classification.
+ * 8s timeout. On timeout or API error → 'unavailable'. Never throws.
+ *
+ * This is NOT a correctness check. Wolfram is still the answer authority.
+ * The model only reconciles notation differences (tan^(-1) vs arctan, log vs ln, etc.).
  */
-function buildWolframQuery(question, kind) {
-  const q = String(question || '').trim();
-  const stripped = stripLatexForWolfram(q);
+async function checkEquivalenceWithModel(claudeAnswer, wolframResult, kind) {
+  if (!claudeAnswer || !wolframResult) return 'unavailable';
 
-  if (kind === 'differentiation') {
-    const match = q.match(
-      /(?:differentiate|find\s+(?:the\s+)?derivative\s+of|d\/dx\s+of)\s+(.+)/i
-    );
-    const expr = match
-      ? stripLatexForWolfram(match[1].trim())
-      : stripped;
-    return { query: `d/dx[${expr}]`, kind: 'differentiation' };
+  const Anthropic = require('@anthropic-ai/sdk');
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+  const prompt = `You are a mathematical equivalence checker. Your only job is to determine whether two math expressions are equivalent.
+
+Expression A (from primary solver, may use LaTeX notation):
+${claudeAnswer}
+
+Expression B (from Wolfram Alpha, uses plaintext notation):
+${wolframResult}
+
+Problem kind: ${kind}
+
+Are these mathematically equivalent? Consider:
+- Different notation for the same function (arctan vs tan^(-1), ln vs log when context is natural log)
+- Different but algebraically equivalent forms (factored vs expanded)
+- Integration constants are ignored (C is not a real difference)
+- Sign conventions and branch cuts: if genuinely ambiguous, return unsure
+
+Respond with ONLY a JSON object, no other text, no markdown:
+{"equivalent": true, "reason": "one sentence"}
+or
+{"equivalent": false, "reason": "one sentence"}
+or
+{"equivalent": "unsure", "reason": "one sentence"}`;
+
+  try {
+    const response = await Promise.race([
+      client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 100,
+        temperature: 0,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('equivalence check timeout')), 8000)
+      ),
+    ]);
+
+    const text = response.content?.[0]?.text?.trim() || '';
+    // Strip markdown code fences the model sometimes wraps JSON in
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    let parsed;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch {
+      console.warn('[CAS equivalence] Non-JSON response from model:', text.slice(0, 100));
+      return 'unavailable';
+    }
+
+    if (parsed.equivalent === true) return 'confirmed';
+    if (parsed.equivalent === false) return 'discrepancy';
+    return 'unavailable'; // 'unsure' or any unexpected value
+  } catch (err) {
+    console.warn('[CAS equivalence] Model check failed:', err.message);
+    return 'unavailable';
   }
-
-  if (kind === 'integration') {
-    const match = q.match(
-      /(?:integrate|find\s+(?:the\s+)?integral\s+of|antiderivative\s+of)\s+(.+)/i
-    );
-    let expr = match
-      ? stripLatexForWolfram(match[1].trim())
-      : stripped;
-    // Remove integration variable at end: "x^2 * sin(x) dx" → "x^2 * sin(x)"
-    expr = expr.replace(/\s+d[a-zA-Z]$/, '').trim();
-    return { query: `integrate ${expr}`, kind: 'integration' };
-  }
-
-  if (kind === 'simplification') {
-    return { query: stripped, kind: 'simplification' };
-  }
-
-  if (kind === 'equation') {
-    return { query: `solve ${stripped}`, kind: 'equation' };
-  }
-
-  return null;
 }
 
 async function queryWolfram(expression, kind = 'simplification') {
@@ -137,10 +162,12 @@ async function queryWolfram(expression, kind = 'simplification') {
 
   // Pod lookup varies by query kind
   const podTargets = {
-    differentiation: ['Derivative', 'Derivative of input'],
-    integration: ['Indefinite integral', 'Antiderivative'],
-    simplification: ['Result', 'Simplification'],
-    equation: ['Result', 'Solution', 'Solutions'],
+    differentiation:          ['Derivative', 'Derivative of input'],
+    implicit_differentiation: ['Result', 'Derivative', 'Derivative of input'],
+    integration:              ['Indefinite integral', 'Antiderivative'],
+    simplification:           ['Result', 'Simplification'],
+    equation:                 ['Result', 'Solution', 'Solutions'],
+    limit:                    ['Limit', 'Value', 'Limit result'],
   };
 
   const targets = podTargets[kind] || podTargets['simplification'];
@@ -186,12 +213,16 @@ async function queryWolfram(expression, kind = 'simplification') {
  * Compare Claude's answer to Wolfram's result.
  * Returns 'confirmed' | 'discrepancy' | 'unavailable'
  *
- * Three-tier strategy:
- * 1. Numeric sampling — evaluate both at sampled points, check residuals
- * 2. Normalized string compare — strict equality only, no .includes()
- * 3. Inconclusive — 'unavailable' (never false-positive as discrepancy)
+ * Two-tier strategy:
+ * Tier A: Numeric sampling — deterministic, zero cost, handles clean cases
+ * Tier B: Model equivalence check — handles notation differences (tan^(-1),
+ *         log as natural log, algebraically equivalent forms) that numeric
+ *         sampling cannot resolve. Replaces the removed string normalization tier.
+ * Tier C: unavailable — never false-positive as discrepancy
+ *
+ * compareWithWolfram is async because Tier B makes an API call.
  */
-function compareWithWolfram(claudeAnswerLatex, wolframResult, kind) {
+async function compareWithWolfram(claudeAnswerLatex, wolframResult, kind) {
   if (!claudeAnswerLatex || !wolframResult) return 'unavailable';
 
   const { create, all } = require('mathjs');
@@ -199,28 +230,32 @@ function compareWithWolfram(claudeAnswerLatex, wolframResult, kind) {
 
   function toMathjs(latex) {
     let s = String(latex || '');
-    // Strip integration constant before comparing
     s = s.replace(/\+\s*C\b/gi, '').replace(/\+\s*constant\b/gi, '');
-    // Strip LaTeX environments and convert to plain math
+    s = s.replace(/∞/g, 'Infinity').replace(/\binfinity\b/gi, 'Infinity');
     s = stripLatexForWolfram(s);
-    // If the expression is an equation (A = B), extract the RHS — the final form.
-    // Handles model writing simplification steps as "intermediate = final", and
-    // Wolfram prefixing results with "d/dx(...) =" or "integral ... =".
     if (s.includes('=')) {
       s = s.split('=').pop().trim();
     }
-    // Expand trig shorthands that math.js doesn't support
     s = expandTrigShorthands(s);
+    // Handle Wolfram's space-separated implicit mult: "x^2 log(x)" → "x^2*log(x)"
+    // stripLatexForWolfram only handles adjacent (no-space) cases.
+    s = s.replace(/(\^\d+)\s+([a-zA-Z])/g, '$1*$2');
+    s = s.replace(/(\d)\s+(log|sin|cos|tan|exp|sqrt|ln)\(/g, '$1*$2(');
+    s = s.replace(/([a-zA-Z\)])\s+(log|sin|cos|tan|exp|sqrt|ln)\(/g, '$1*$2(');
     // math.js uses log() for natural log, not ln() — convert after stripping
     s = s.replace(/\bln\(/g, 'log(');
     return s;
   }
 
   function tryNumericSample(exprA, exprB) {
+    // 5 sample points — more attempts before falling through to model tier
+    // reduces unnecessary API calls on evaluable expressions
     const samplePoints = [
       { x: 1.3, t: 0.7, n: 2 },
       { x: -0.8, t: 1.5, n: 3 },
       { x: 2.1, t: 2.3, n: -1 },
+      { x: 0.5, t: 1.1, n: 4 },
+      { x: 3.7, t: 0.3, n: -2 },
     ];
 
     let matchCount = 0;
@@ -242,29 +277,23 @@ function compareWithWolfram(claudeAnswerLatex, wolframResult, kind) {
       }
     }
 
-    if (attemptCount === 0) return null;           // Can't evaluate — inconclusive
-    if (matchCount === attemptCount) return true;  // All sampled points match
-    if (matchCount === 0) return false;            // All sampled points disagree
-    return null;                                   // Partial match — inconclusive
+    if (attemptCount === 0) return null;
+    if (matchCount === attemptCount) return true;
+    if (matchCount === 0) return false;
+    return null; // partial match — inconclusive
   }
 
   const claudeClean = toMathjs(claudeAnswerLatex);
   const wolframClean = toMathjs(wolframResult);
 
-  // Tier A: numeric sampling
+  // Tier A: numeric sampling (deterministic, zero cost)
   const numericResult = tryNumericSample(claudeClean, wolframClean);
   if (numericResult === true) return 'confirmed';
   if (numericResult === false) return 'discrepancy';
 
-  // Tier B: normalized string compare (strict — no .includes())
-  const normalize = (s) =>
-    s.replace(/\s+/g, '').replace(/\*/g, '').toLowerCase();
-  const normA = normalize(claudeClean);
-  const normB = normalize(wolframClean);
-  if (normA === normB) return 'confirmed';
-
-  // Tier C: inconclusive — do not call it a discrepancy
-  return 'unavailable';
+  // Tier B: model equivalence check (handles notation differences numeric can't resolve)
+  const modelVerdict = await checkEquivalenceWithModel(claudeAnswerLatex, wolframResult, kind);
+  return modelVerdict;
 }
 
 /**
@@ -275,13 +304,33 @@ function compareWithWolfram(claudeAnswerLatex, wolframResult, kind) {
 function inferKindFromQuery(query) {
   const q = String(query || '').toLowerCase().trim();
 
+  // Implicit differentiation — Result pod first (where Wolfram places dy/dx answer)
+  // Must check before the plain differentiation check to avoid misclassifying
+  if (
+    q.includes('implicit') ||
+    q.includes('implicitly') ||
+    (q.includes('dy/dx') && q.includes('='))
+  ) return 'implicit_differentiation';
+
   if (q.startsWith('d/dx') || q.includes('derivative')) return 'differentiation';
   if (q.startsWith('integrate') || q.startsWith('integral of') || q.startsWith('antiderivative')) return 'integration';
   if (q.startsWith('simplify') || q.startsWith('expand') || q.startsWith('factor')) return 'simplification';
+
+  // Limit — before equation check because limit queries can contain '=' in piecewise conditions
+  if (
+    q.startsWith('lim') ||
+    q.includes('limit of') ||
+    q.includes('limit as') ||
+    q.includes('as x approaches') ||
+    q.includes('as x →') ||
+    q.includes('as x->') ||
+    q.includes('as x ->')
+  ) return 'limit';
+
   if (q.startsWith('solve') || (q.includes('=') && !q.startsWith('d/dx'))) return 'equation';
 
   // Default: simplification — Wolfram returns Result pod for most bare expressions
   return 'simplification';
 }
 
-module.exports = { queryWolfram, buildWolframQuery, compareWithWolfram, inferKindFromQuery };
+module.exports = { queryWolfram, compareWithWolfram, inferKindFromQuery, checkEquivalenceWithModel };

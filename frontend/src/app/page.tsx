@@ -40,6 +40,7 @@ type Artifact = {
       explanation: string;
       concept: string;
     }[];
+    wolfram_query: string | null;
   };
   verification: {
     badge: 'verified' | 'checked' | 'not_verified' | 'discrepancy_detected';
@@ -260,7 +261,10 @@ export default function Home() {
   const [openExplainIndex, setOpenExplainIndex] = useState<number | null>(null);
   const [showProofDetails, setShowProofDetails] = useState(false);
   const [exampleIndex, setExampleIndex] = useState(0);
-  const [attachedFile, setAttachedFile] = useState<File | null>(null);
+  const [imageExtracting, setImageExtracting] = useState(false);
+  const [extractedProblems, setExtractedProblems] = useState<string[] | null>(null);
+  const [extractError, setExtractError] = useState<string | null>(null);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [interactiveMode, setInteractiveMode] = useState(false);
   const [showFormatHint, setShowFormatHint] = useState(false);
   const [mathKeyboardFlash, setMathKeyboardFlash] = useState(false);
@@ -301,6 +305,17 @@ export default function Home() {
   // Sticky answer bar
   const answerBoxRef = useRef<HTMLDivElement>(null);
   const [showStickyBar, setShowStickyBar] = useState(false);
+
+  // Advanced verification UX
+  const [highlightAdvancedBtn, setHighlightAdvancedBtn] = useState(false);
+  const [advancedVerifFired, setAdvancedVerifFired] = useState(false);
+
+  // Sidebar collapse + hover-peek
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarPeeking, setSidebarPeeking] = useState(false);
+  const sidebarOpen = !sidebarCollapsed || sidebarPeeking;
+  const sidebarWidth = sidebarOpen ? 240 : 56;
+  const contentOffset = sidebarWidth / 2;
 
   const examples = mode === 'math' ? MATH_EXAMPLES : PHYSICS_EXAMPLES;
   const verificationDetails = getVerificationDetails(artifact);
@@ -414,6 +429,13 @@ export default function Home() {
     return () => observer.disconnect();
   }, [artifact]);
 
+  // Auto-clear extract error after 4 seconds
+  useEffect(() => {
+    if (!extractError) return;
+    const t = setTimeout(() => setExtractError(null), 4000);
+    return () => clearTimeout(t);
+  }, [extractError]);
+
   const doSolve = async () => {
     if (loading || !question.trim()) return;
 
@@ -432,6 +454,7 @@ export default function Home() {
     setOpenExplainIndex(null);
     setShowProofDetails(false);
     setAdvancedVerifResult(null);
+    setAdvancedVerifFired(false);
     setShowAdvancedVerifGate(false);
     setShowFormatHint(false);
     setGraphOpen(false);
@@ -456,7 +479,7 @@ export default function Home() {
     solveTimersRef.current.push(setTimeout(() => setStage('building'), 7000));
 
     try {
-      const res = await axios.post('http://localhost:5000/solve', { question, mode, advanced: shouldAutoFire });
+      const res = await axios.post(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'}/solve`, { question, mode });
 
       // Clear scheduled stage timers
       solveTimersRef.current.forEach(clearTimeout);
@@ -475,13 +498,53 @@ export default function Home() {
       solveTimersRef.current.push(setTimeout(() => setStage('complete'), delay));
       solveTimersRef.current.push(setTimeout(() => setStage('idle'), delay + 400));
 
-      artifactRef.current = res.data.artifact || null;
-      setArtifact(res.data.artifact || null);
-      if (shouldAutoFire) {
+      const solveArtifact = res.data.artifact || null;
+      artifactRef.current = solveArtifact;
+      setArtifact(solveArtifact);
+
+      if (shouldAutoFire && solveArtifact) {
         setHasSeenAdvancedVerification(true);
-        pendingAdvancedResult.current = res.data.artifact || null;
-        advancedResultReady.current = true;
         requestAnimationFrame(() => startWedgeSequence());
+
+        const verifyPayload = {
+          mode: solveArtifact.mode,
+          wolfram_query: solveArtifact.solution?.wolfram_query || null,
+          final_answer_latex: solveArtifact.solution?.final_answer_latex || '',
+          question: solveArtifact.original_input,
+          structured_solution: solveArtifact.solution,
+        };
+
+        axios.post(
+          `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'}/verify`,
+          verifyPayload
+        ).then((verifyRes) => {
+          const verifyData = verifyRes.data;
+          const mergedArtifact: Artifact = {
+            ...solveArtifact,
+            cas: verifyData.cas || null,
+            audit: verifyData.audit || null,
+            verification: {
+              ...solveArtifact.verification,
+              ...(verifyData.cas?.verdict === 'confirmed' && {
+                badge: 'verified' as const,
+                user_reason: 'Confirmed by Wolfram Alpha.',
+              }),
+              ...(verifyData.cas?.verdict === 'discrepancy' && {
+                badge: 'discrepancy_detected' as const,
+                user_reason: 'Wolfram Alpha returned a different result — review recommended.',
+              }),
+            },
+          };
+          pendingAdvancedResult.current = mergedArtifact;
+          advancedResultReady.current = true;
+        }).catch((err: Error) => {
+          console.warn('[verify] background call failed:', err.message);
+          pendingAdvancedResult.current = {
+            ...solveArtifact,
+            cas: { verdict: 'unavailable', wolfram_result: null, expression_checked: null, used: true },
+          };
+          advancedResultReady.current = true;
+        });
       }
     } catch (err) {
       solveTimersRef.current.forEach(clearTimeout);
@@ -513,10 +576,47 @@ export default function Home() {
     }
   };
 
-  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0] ?? null;
-    setAttachedFile(file);
+  const handleImageFile = async (file: File) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (!allowed.includes(file.type)) {
+      setExtractError('Unsupported image type. Use JPEG, PNG, GIF, or WebP.');
+      return;
+    }
+
+    setImageExtracting(true);
+    setExtractedProblems(null);
+    setExtractError(null);
+
+    const formData = new FormData();
+    formData.append('image', file);
+
+    try {
+      const response = await axios.post(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'}/extract-problem`,
+        formData,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      );
+      const data = response.data;
+      if (data.mode === 'single') {
+        setQuestion(data.problem);
+        setExtractedProblems(null);
+      } else if (data.mode === 'multiple') {
+        setExtractedProblems(data.problems);
+      } else {
+        setExtractError('No math problems found in this image.');
+      }
+    } catch {
+      setExtractError('Failed to read image. Please try again.');
+    } finally {
+      setImageExtracting(false);
+    }
+  };
+
+  const handleImageUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
     e.target.value = '';
+    await handleImageFile(file);
   };
 
   const scrollToComposer = () => {
@@ -543,12 +643,31 @@ export default function Home() {
     if (!artifact || loading) return;
     setAdvancedVerifLoading(true);
     try {
-      const res = await axios.post('http://localhost:5000/solve', {
-        question: artifact.original_input,
+      const res = await axios.post(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'}/verify`, {
         mode: artifact.mode,
-        advanced: true,
+        wolfram_query: artifact.solution?.wolfram_query || null,
+        final_answer_latex: artifact.solution?.final_answer_latex || '',
+        question: artifact.original_input,
+        structured_solution: artifact.solution,
       });
-      pendingAdvancedResult.current = res.data.artifact || null;
+      const verifyData = res.data;
+      const mergedArtifact: Artifact = {
+        ...artifact,
+        cas: verifyData.cas || null,
+        audit: verifyData.audit || null,
+        verification: {
+          ...artifact.verification,
+          ...(verifyData.cas?.verdict === 'confirmed' && {
+            badge: 'verified' as const,
+            user_reason: 'Confirmed by Wolfram Alpha.',
+          }),
+          ...(verifyData.cas?.verdict === 'discrepancy' && {
+            badge: 'discrepancy_detected' as const,
+            user_reason: 'Wolfram Alpha returned a different result — review recommended.',
+          }),
+        },
+      };
+      pendingAdvancedResult.current = mergedArtifact;
       advancedResultReady.current = true;
     } catch (err) {
       console.error('[Advanced Verification]', err);
@@ -571,6 +690,7 @@ export default function Home() {
     if (advancedVerifUsed >= ADVANCED_VERIF_FREE_LIMIT) {
       setShowAdvancedVerifGate(true);
     } else {
+      setAdvancedVerifFired(true);
       setAdvancedVerifUsed((prev) => prev + 1);
       advancedResultReady.current = false;
       pendingAdvancedResult.current = null;
@@ -592,7 +712,8 @@ export default function Home() {
         scrollToComposer();
         break;
       case 'RUN_ADVANCED_VERIFICATION':
-        handleAdvancedVerification();
+        setHighlightAdvancedBtn(true);
+        setTimeout(() => setHighlightAdvancedBtn(false), 2000);
         break;
       case 'SIMPLIFY_WORDING':
         scrollToComposer();
@@ -699,6 +820,16 @@ export default function Home() {
   ) ?? [];
 
   const wedgeActive = wedgePhase !== 'idle' && !!artifact;
+  const shouldGhost = wedgePhase === 'done' && splitKind !== null;
+
+  const wolframDisplay = (() => {
+    const raw = advancedVerifResult?.cas?.wolfram_result || '';
+    if (!raw) return '';
+    let display = raw.includes('=') ? (raw.split('=').pop()?.trim() || raw) : raw;
+    // Wolfram uses log() to mean natural log; translate for display consistency
+    display = display.replace(/\blog\(/g, 'ln(');
+    return display;
+  })();
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -709,96 +840,163 @@ export default function Home() {
         }
       `}</style>
 
+      {/* Grain texture — permanent, full viewport */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-0 z-0"
+        style={{ opacity: 0.055 }}
+      >
+        <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+          <filter id="grain">
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.65"
+              numOctaves="3"
+              stitchTiles="stitch"
+            />
+            <feColorMatrix type="saturate" values="0" />
+          </filter>
+          <rect width="100%" height="100%" filter="url(#grain)" />
+        </svg>
+      </div>
+
       {/* Left Panel */}
-      <aside className="fixed left-0 top-0 z-30 flex h-screen w-60 flex-col border-r border-white/[0.08] bg-zinc-950 p-5">
-        {/* Logo */}
-        <button
-          type="button"
-          onClick={handleReset}
-          className="cursor-pointer pt-1 pb-6 text-left"
-        >
-          <span className={`${dmSerifDisplay.className} text-[22px] tracking-tight text-white`}>Ergo.</span>
-        </button>
+      <aside
+        className={`fixed left-0 top-0 z-30 flex h-screen flex-col overflow-hidden border-r border-white/[0.08] bg-zinc-950 transition-all duration-200 ${sidebarOpen ? 'w-60' : 'w-14'} ${sidebarCollapsed && sidebarPeeking ? 'cursor-pointer' : ''}`}
+        style={{ padding: sidebarOpen ? '20px' : '20px 0' }}
+        onMouseEnter={() => { if (sidebarCollapsed) setSidebarPeeking(true); }}
+        onMouseLeave={() => { if (sidebarCollapsed) setSidebarPeeking(false); }}
+        onClick={() => {
+          if (sidebarCollapsed && sidebarPeeking) {
+            setSidebarCollapsed(false);
+            setSidebarPeeking(false);
+          }
+        }}
+      >
+        {/* Logo row + toggle */}
+        <div className="flex items-center justify-between pb-6 pt-1">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); handleReset(); }}
+            className={`cursor-pointer text-left ${sidebarOpen ? 'pl-3' : 'pl-0 w-full flex justify-center'}`}
+          >
+            <span className={`${dmSerifDisplay.className} text-[22px] tracking-tight text-white`}>
+              {sidebarOpen ? 'Ergo.' : 'E.'}
+            </span>
+          </button>
+          {!sidebarCollapsed && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSidebarCollapsed(true);
+                setSidebarPeeking(false);
+              }}
+              className="rounded p-1 text-zinc-600 transition hover:text-zinc-400"
+              title="Collapse sidebar"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <line x1="9" y1="3" x2="9" y2="21" />
+              </svg>
+            </button>
+          )}
+        </div>
 
         {/* Nav */}
         <div className="space-y-1">
           <button
             type="button"
-            onClick={handleReset}
-            className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-[14px] text-zinc-300 transition-colors hover:bg-white/[0.03] hover:text-zinc-100"
+            onClick={(e) => { e.stopPropagation(); handleReset(); }}
+            className={`flex w-full items-center rounded-md py-2 text-[14px] text-zinc-300 transition-colors hover:bg-white/[0.03] hover:text-zinc-100 ${sidebarOpen ? 'gap-3 px-3' : 'justify-center px-0'}`}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
               <polyline points="9 22 9 12 15 12 15 22" />
             </svg>
-            Home
+            {sidebarOpen && <span>Home</span>}
           </button>
         </div>
 
-        <div className="my-4 border-t border-white/[0.08]" />
+        {sidebarOpen && <div className="my-4 border-t border-white/[0.08]" />}
 
-        {/* Sessions */}
-        <div>
-          <div className="px-3 pb-2 text-[11px] uppercase tracking-wider text-zinc-500">Sessions</div>
-          <div className="mx-3 my-2 rounded-md border border-white/[0.04] bg-white/[0.02] p-3">
-            <p className="text-[14px] leading-6 text-zinc-400">Sign in to save and track your sessions</p>
-            <button
-              type="button"
-              onClick={() => {/* Phase 5: open auth flow */}}
-              className="mt-2 w-full rounded-md bg-zinc-800 px-3 py-1.5 text-[13px] text-zinc-100 transition-colors hover:bg-zinc-700"
-            >
-              Sign in
-            </button>
+        {/* Sessions — hidden when collapsed */}
+        {sidebarOpen && (
+          <div>
+            <div className="px-3 pb-2 text-[11px] uppercase tracking-wider text-zinc-500">Sessions</div>
+            <div className="mx-3 my-2 rounded-md border border-white/[0.04] bg-white/[0.02] p-3">
+              <p className="text-[14px] leading-6 text-zinc-400">Sign in to save and track your sessions</p>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); /* Phase 5: open auth flow */ }}
+                className="mt-2 w-full rounded-md bg-zinc-800 px-3 py-1.5 text-[13px] text-zinc-100 transition-colors hover:bg-zinc-700"
+              >
+                Sign in
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Bottom items */}
-        <div className="mt-auto space-y-1">
-          <div className="mb-3 border-t border-white/[0.08]" />
-          {/* Profile */}
+        <div className="mt-auto space-y-1 border-t border-white/[0.06] pt-3">
           <button
             type="button"
-            onClick={() => {/* Phase 5: open auth flow */}}
-            className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-[14px] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300"
+            onClick={(e) => { e.stopPropagation(); /* Phase 5: open auth flow */ }}
+            className={`flex w-full items-center rounded-md py-2 text-[14px] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300 ${sidebarOpen ? 'gap-3 px-3' : 'justify-center px-0'}`}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
               <circle cx="12" cy="7" r="4" />
             </svg>
-            Profile
+            {sidebarOpen && <span>Profile</span>}
           </button>
           <button
             type="button"
-            className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-[14px] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300"
+            onClick={(e) => e.stopPropagation()}
+            className={`flex w-full items-center rounded-md py-2 text-[14px] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300 ${sidebarOpen ? 'gap-3 px-3' : 'justify-center px-0'}`}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
-            Settings
+            {sidebarOpen && <span>Settings</span>}
           </button>
           <button
             type="button"
-            className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-[14px] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300"
+            onClick={(e) => e.stopPropagation()}
+            className={`flex w-full items-center rounded-md py-2 text-[14px] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300 ${sidebarOpen ? 'gap-3 px-3' : 'justify-center px-0'}`}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="10" />
               <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
               <line x1="12" y1="17" x2="12.01" y2="17" />
             </svg>
-            Help
+            {sidebarOpen && <span>Help</span>}
           </button>
         </div>
+
+        {/* Corner accent — crosshatch pattern fading from bottom-left */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-0 left-0 h-20 w-20"
+          style={{
+            backgroundImage: `url("data:image/svg+xml,%3Csvg width='10' height='10' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 10L10 0' stroke='rgba(255,255,255,0.07)' stroke-width='0.5'/%3E%3C/svg%3E")`,
+            backgroundSize: '10px 10px',
+            maskImage: 'radial-gradient(ellipse at bottom left, black 30%, transparent 80%)',
+            WebkitMaskImage: 'radial-gradient(ellipse at bottom left, black 30%, transparent 80%)',
+          }}
+        />
       </aside>
 
       {/* Sticky answer bar — appears when answer box scrolls out of view */}
       {artifact && (
         <div
-          className={`fixed top-0 left-[240px] right-0 z-[25] h-9 transition-all duration-300 ${
+          className={`fixed top-0 right-0 z-[25] h-9 transition-all duration-300 ${
             showStickyBar
               ? 'translate-y-0 opacity-100 pointer-events-auto'
               : '-translate-y-full opacity-0 pointer-events-none'
           }`}
+          style={{ left: sidebarWidth }}
         >
           <div className="flex h-full items-center gap-3 bg-zinc-950/75 px-6 shadow-sm">
             {/* Color bar: verification state */}
@@ -853,15 +1051,17 @@ export default function Home() {
       {/* Slogan — fixed, visible in idle state only, centered in content area */}
       <div
         className={`pointer-events-none fixed z-10 text-center transition-opacity duration-[380ms] ease-out ${isActive ? 'opacity-0' : 'opacity-100'}`}
-        style={{ top: '42vh', left: 'calc(50% + 120px)', transform: 'translateX(-50%) translateY(-50%)' }}
+        style={{ top: '42vh', left: `calc(50% + ${contentOffset}px)`, transform: 'translateX(-50%) translateY(-50%)' }}
       >
         <p className={`${dmSerifDisplay.className} text-2xl text-zinc-300`}>
           The answer, and the proof.
         </p>
+        {/* Line motif — centers the slogan visually */}
+        <div className="mx-auto mt-3 h-px w-8 rounded-full bg-white/20" />
       </div>
 
-      {/* Scrollable content — ml-60 clears the fixed left panel */}
-      <div className="relative z-10 ml-60 px-6 pt-8 pb-[280px]">
+      {/* Scrollable content — margin clears the fixed left panel */}
+      <div className="relative z-10 px-6 pt-8 pb-[280px]" style={{ marginLeft: sidebarWidth, transition: 'margin-left 200ms' }}>
 
         {/* Dot pattern — content area only */}
         <div
@@ -869,9 +1069,10 @@ export default function Home() {
           className={`pointer-events-none fixed bottom-0 right-0 transition-opacity duration-[380ms] ease-out ${isActive ? 'opacity-0' : 'opacity-100'}`}
           style={{
             top: 0,
-            left: '240px',
+            left: sidebarWidth,
+            transition: 'left 200ms',
             zIndex: 5,
-            backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.08) 1px, transparent 1px)',
+            backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.18) 1px, transparent 1px)',
             backgroundSize: '24px 24px',
             maskImage: 'radial-gradient(ellipse 700px 500px at 50% 62%, transparent 25%, black 100%)',
             WebkitMaskImage: 'radial-gradient(ellipse 700px 500px at 50% 62%, transparent 25%, black 100%)',
@@ -889,7 +1090,7 @@ export default function Home() {
             <div className="flex flex-col">
 
               {/* Final Answer block */}
-              <div ref={answerBoxRef} className="group rounded-[24px] border border-white/[0.08] bg-white/[0.04] px-6 py-4">
+              <div ref={answerBoxRef} className="group mb-1 rounded-[24px] border border-white/[0.08] bg-white/[0.04] px-6 py-5">
                 <div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Final Answer</div>
 
                 {/* Centered answer OR in-box split (discrepancy or confirmed) — or animated wedge */}
@@ -906,7 +1107,7 @@ export default function Home() {
                         {splitKind === 'confirmed' ? '✓ Confirmed' : '⚠ Discrepancy Detected'}
                       </div>
                       {/* Two-column comparison */}
-                      <div className="flex items-center">
+                      <div className={`relative flex items-center ${shouldGhost ? 'border-b border-white/[0.06] pb-3' : ''}`}>
                         <div className="flex min-h-[140px] flex-1 flex-col items-center justify-center px-5 py-4 text-center">
                           <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Primary solution</div>
                           <div className="[&_.katex]:text-[1.1em]">
@@ -921,13 +1122,18 @@ export default function Home() {
                             {artifact.mode === 'math' ? 'Wolfram Alpha' : 'Alternate method'}
                           </div>
                           {artifact.mode === 'math' ? (
-                            advancedVerifResult?.cas?.wolfram_result ? (
-                              <span className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
-                                {advancedVerifResult.cas.wolfram_result}
-                              </span>
-                            ) : (
-                              <span className="text-sm italic text-zinc-500">Result unavailable</span>
-                            )
+                            <KaTeXBoundary
+                              fallback={
+                                wolframDisplay
+                                  ? <span className={`${jetbrainsMono.className} text-sm text-zinc-300`}>{wolframDisplay}</span>
+                                  : <span className="text-sm italic text-zinc-500">Result unavailable</span>
+                              }
+                            >
+                              {wolframDisplay
+                                ? <div className="[&_.katex]:text-[1.1em]"><BlockMath math={wolframDisplay} /></div>
+                                : <span className="text-sm italic text-zinc-500">Result unavailable</span>
+                              }
+                            </KaTeXBoundary>
                           ) : (
                             advancedVerifResult?.audit?.audit_answer ? (
                               <>
@@ -982,7 +1188,7 @@ export default function Home() {
                     </AnimatePresence>
 
                     {/* Two-column body */}
-                    <div className="relative flex items-start">
+                    <div className="relative flex items-center">
 
                       {/* LEFT — answer slides via Framer Motion layout */}
                       <motion.div
@@ -1080,13 +1286,18 @@ export default function Home() {
                                 </div>
                                 <div className="overflow-x-auto">
                                   {artifact.mode === 'math' ? (
-                                    advancedVerifResult?.cas?.wolfram_result ? (
-                                      <span className={`${jetbrainsMono.className} text-sm text-zinc-300`}>
-                                        {advancedVerifResult.cas.wolfram_result}
-                                      </span>
-                                    ) : (
-                                      <span className="text-sm italic text-zinc-500">Result unavailable</span>
-                                    )
+                                    <KaTeXBoundary
+                                      fallback={
+                                        wolframDisplay
+                                          ? <span className={`${jetbrainsMono.className} text-sm text-zinc-300`}>{wolframDisplay}</span>
+                                          : <span className="text-sm italic text-zinc-500">Result unavailable</span>
+                                      }
+                                    >
+                                      {wolframDisplay
+                                        ? <div className="[&_.katex]:text-[1.1em]"><BlockMath math={wolframDisplay} /></div>
+                                        : <span className="text-sm italic text-zinc-500">Result unavailable</span>
+                                      }
+                                    </KaTeXBoundary>
                                   ) : (
                                     advancedVerifResult?.audit?.audit_answer ? (
                                       <>
@@ -1138,12 +1349,14 @@ export default function Home() {
                 )}
 
                 {/* Action cluster — always visible when no split; ghosts on hover when split is showing */}
-                <div className={`mt-4 flex items-center gap-3 text-xs transition-opacity duration-200 ${
-                  splitKind !== null
-                    ? showProofDetails
-                      ? 'opacity-100 text-zinc-500'
-                      : 'opacity-0 text-zinc-500 group-hover:opacity-100'
-                    : 'opacity-100 text-zinc-500'
+                <div className={`flex items-center gap-3 text-xs transition-opacity duration-200 ${
+                  shouldGhost
+                    ? `mt-0 border-t border-white/[0.06] pt-3 ${
+                        showProofDetails
+                          ? 'opacity-100 text-zinc-500'
+                          : 'opacity-0 text-zinc-500 group-hover:opacity-100'
+                      }`
+                    : 'mt-4 opacity-100 text-zinc-500'
                 }`}>
                   <button
                     type="button"
@@ -1156,8 +1369,14 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={handleAdvancedVerification}
-                    disabled={advancedVerifLoading || !!advancedVerifResult}
-                    className={`transition disabled:opacity-50 ${advancedVerifResult ? 'cursor-not-allowed text-zinc-700 pointer-events-none' : 'hover:text-zinc-300'}`}
+                    disabled={advancedVerifFired || advancedVerifLoading}
+                    className={`transition ${
+                      advancedVerifFired
+                        ? 'opacity-40 cursor-not-allowed pointer-events-none'
+                        : highlightAdvancedBtn
+                          ? 'text-zinc-100 ring-1 ring-white/20 rounded px-1'
+                          : 'hover:text-zinc-200'
+                    }`}
                   >
                     {advancedVerifLoading ? 'Checking...' : artifact.mode === 'physics' ? 'Cross-method audit' : 'Advanced verification'}
                   </button>
@@ -1252,13 +1471,18 @@ export default function Home() {
 
               {/* Overview — caption below answer box */}
               {artifact.solution.overview && (
-                <p className="mt-3 px-1 text-[13px] leading-5 text-zinc-400">
+                <p className="mt-3 px-1 text-[14px] leading-6 font-medium text-zinc-200">
                   {artifact.solution.overview}
                 </p>
               )}
 
+              {/* Overview → sections separator */}
+              {artifact.solution.overview && artifact.solution.sections?.length > 0 && (
+                <div className="mt-4 mb-2 h-px bg-white/[0.05]" />
+              )}
+
               {/* Solution sections — connected proof layout */}
-              <div className="relative ml-4 mt-4">
+              <div className="relative ml-4 mt-2">
                 {/* Vertical connector line */}
                 <div className="absolute left-0 top-2 bottom-2 w-px bg-white/[0.08]" />
 
@@ -1275,16 +1499,16 @@ export default function Home() {
                           {sec.title}
                         </h3>
 
-                        {sec.summary_latex && (
-                          <div className="overflow-x-auto py-1 [&_.katex]:text-[1.05em]">
-                            <BlockMath math={sec.summary_latex} />
-                          </div>
-                        )}
-
                         {sec.explanation && (
                           <p className="max-w-[850px] text-[14px] leading-6 text-zinc-300">
                             {sec.explanation}
                           </p>
+                        )}
+
+                        {sec.summary_latex && (
+                          <div className="overflow-x-auto py-2 pl-4 border-l border-white/[0.06] [&_.katex]:text-[1.05em]">
+                            <BlockMath math={sec.summary_latex} />
+                          </div>
                         )}
 
                         {isOpen && sec.concept && (
@@ -1322,14 +1546,14 @@ export default function Home() {
         </section>
       </div>
 
-      {/* Floating Input Composer — centered in content area (right of 240px panel) */}
+      {/* Floating Input Composer — centered in content area (right of sidebar panel) */}
       <div
         className="fixed"
         style={{
-          left: 'calc(50% + 120px)',
+          left: `calc(50% + ${contentOffset}px)`,
           transform: 'translateX(-50%)',
           bottom: isActive ? 0 : '32vh',
-          width: isActive ? 'calc(100% - 240px)' : '700px',
+          width: isActive ? `calc(100% - ${sidebarWidth}px)` : '700px',
           zIndex: isActive ? 20 : 10,
           paddingLeft: isActive ? '1.5rem' : 0,
           paddingRight: isActive ? '1.5rem' : 0,
@@ -1470,39 +1694,98 @@ export default function Home() {
         {/* Composer */}
         <form id="solver-form" onSubmit={handleSubmit} ref={composerRef}>
           <div
-            className="relative z-10 rounded-[26px] border bg-zinc-900 shadow-[0_8px_40px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur-xl"
+            className="relative z-10 rounded-[26px] border bg-zinc-900 shadow-[0_8px_40px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur-xl transition-colors duration-150"
             style={{
-              borderColor: interactiveMode ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.10)',
-              transition: 'border-color 150ms ease-out',
+              borderColor: isDraggingOver
+                ? 'rgba(255,255,255,0.20)'
+                : interactiveMode
+                  ? 'rgba(255,255,255,0.20)'
+                  : 'rgba(255,255,255,0.10)',
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              if (Array.from(e.dataTransfer.types).includes('Files')) {
+                setIsDraggingOver(true);
+              }
+            }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                setIsDraggingOver(false);
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDraggingOver(false);
+              const file = Array.from(e.dataTransfer.files).find(f =>
+                f.type.startsWith('image/')
+              );
+              if (file) handleImageFile(file);
             }}
           >
-            {/* Attachment preview */}
-            {attachedFile && (
-              <div className="flex items-center gap-2 px-5 pt-3">
-                <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-xs text-zinc-300">
-                  <span>{attachedFile.name}</span>
-                  <button
-                    type="button"
-                    onClick={() => setAttachedFile(null)}
-                    className="ml-1 text-zinc-500 hover:text-zinc-200"
-                  >
-                    ×
-                  </button>
-                </div>
+            {/* Drop zone overlay */}
+            {isDraggingOver && (
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center rounded-[26px] border border-dashed border-white/20 bg-zinc-950/95 pointer-events-none">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mb-2 text-zinc-400">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                <p className="text-[13px] text-zinc-400">Drop image here</p>
+                <p className="mt-1 text-[11px] text-zinc-600">Math problems will be extracted automatically</p>
               </div>
             )}
 
-            {/* Textarea */}
-            <textarea
-              ref={textareaRef}
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={loading}
-              placeholder={ghostQuestion || examples[exampleIndex]}
-              rows={3}
-              className="block w-full resize-none bg-transparent px-5 pb-2 pt-4 text-sm text-zinc-100 placeholder:text-zinc-600 outline-none disabled:cursor-not-allowed disabled:opacity-50"
-            />
+            {/* Disambiguation UI — shown when multiple problems extracted */}
+            {extractedProblems !== null ? (
+              <div className="px-4 py-3">
+                <p className="mb-3 text-[13px] text-zinc-400">
+                  Found {extractedProblems.length} problems — which one would you like to solve?
+                </p>
+                <div className="space-y-2">
+                  {extractedProblems.map((problem, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => { setQuestion(problem); setExtractedProblems(null); }}
+                      className="w-full rounded-[12px] border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-left text-[13px] text-zinc-200 transition hover:bg-white/[0.06] hover:border-white/[0.14]"
+                    >
+                      {problem}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setExtractedProblems(null)}
+                  className="mt-3 text-[12px] text-zinc-600 transition hover:text-zinc-400"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              /* Textarea */
+              <textarea
+                ref={textareaRef}
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onPaste={(e) => {
+                  const items = e.clipboardData?.items;
+                  if (!items) return;
+                  for (const item of Array.from(items)) {
+                    if (item.type.startsWith('image/')) {
+                      e.preventDefault();
+                      const file = item.getAsFile();
+                      if (file) handleImageFile(file);
+                      return;
+                    }
+                  }
+                }}
+                disabled={loading}
+                placeholder={ghostQuestion || examples[exampleIndex]}
+                rows={3}
+                className="block w-full resize-none bg-transparent px-5 pb-2 pt-4 text-sm text-zinc-100 placeholder:text-zinc-600 outline-none disabled:cursor-not-allowed disabled:opacity-50"
+              />
+            )}
 
             {/* Toolbar row */}
             <div className="flex items-center justify-between px-3 pb-3">
@@ -1510,19 +1793,26 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-400 transition hover:bg-white/[0.06] hover:text-zinc-200"
-                  title="Attach image"
+                  disabled={imageExtracting || loading}
+                  className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-400 transition hover:bg-white/[0.06] hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  title="Extract problem from image"
                 >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
-                  </svg>
+                  {imageExtracting ? (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="animate-spin">
+                      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                    </svg>
+                  ) : (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                    </svg>
+                  )}
                 </button>
 
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*"
-                  onChange={handleFileChange}
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  onChange={handleImageUpload}
                   className="hidden"
                 />
 
@@ -1570,6 +1860,11 @@ export default function Home() {
             </div>
           </div>
         </form>
+
+        {/* Extract error — inline, auto-clears after 4s */}
+        {extractError && (
+          <p className="mt-2 px-1 text-[12px] text-zinc-500">{extractError}</p>
+        )}
       </div>
 
       {/* Graph Popover — floating top-right, does not push content */}

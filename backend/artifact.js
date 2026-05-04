@@ -415,11 +415,23 @@ const certainty = mapVerificationToCertainty(
     && !rawFinalAnswer.includes('"final_answer_latex"');
 
   let graphable = structuredSolution?.graphable === true;
-  const graphExpression = typeof structuredSolution?.graph_expression === 'string'
+  let graphExpression = typeof structuredSolution?.graph_expression === 'string'
     ? structuredSolution.graph_expression.trim()
     : '';
   if (graphable && !graphExpression) {
     graphable = false;
+  }
+  // Guard: dy/dx results and unresolved implicit expressions are not plottable
+  if (
+    graphable &&
+    graphExpression &&
+    (graphExpression.includes('dy/dx') ||
+     graphExpression.includes('dy') ||
+     (graphExpression.includes('=') && graphExpression.includes('y') && graphExpression.includes('x') &&
+      !graphExpression.trim().startsWith('y=')))
+  ) {
+    graphable = false;
+    graphExpression = '';
   }
 
   const fallbackFinalAnswer = extractFinalMathLine(answer);
@@ -439,6 +451,7 @@ const certainty = mapVerificationToCertainty(
             explanation: section.explanation || "",
             concept: section.concept || "",
           })),
+          wolfram_query: structuredSolution?.wolfram_query || null,
         }
       : {
           final_answer_latex: fallbackFinalAnswer || "",
