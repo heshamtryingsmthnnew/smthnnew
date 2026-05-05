@@ -121,6 +121,18 @@ Solution generation: claude-sonnet-4-5
 Normalization embedded in solution call — no separate model needed.
 OpenAI fully removed from codebase.
 
+### Pivot 7: Per-user data layer added
+Phase 4 introduces Supabase as the data backbone. Auth, history, and the
+library all live in Postgres. Anonymous solves still work fully — auth is
+optional, surfaces history. The library accumulates regardless of auth state.
+
+### Pivot 8: Deployment re-sequenced after feature build
+Original plan was to deploy a single-solve product first (old Phase 4),
+then add auth and features. Re-sequenced so that History + Auth + Batch
+ship before deployment. Rationale: the public's first exposure to Ergo
+should be the workflow product, not a single-feature version that would
+generate "neat, never came back" reactions. Deployment becomes Phase 6.
+
 ---
 
 ## 5. Layout Blueprint (Implemented)
@@ -983,8 +995,28 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     bg-zinc-950/95 — textarea faintly visible underneath.
   - BUILD_VERSION: "v3.9.3-polish-08"
 
-🔲 Phase 4 — History + Library + Auth
-See HISTORY_BRIEF.md.
+✅ Phase 4 — History + Library + Auth ✅ COMPLETE
+  - Supabase Auth (magic link only) wired into frontend and backend.
+    Redirect URL configured for localhost:3000 — production URL added
+    during Phase 6 deployment.
+  - solves table in Supabase Postgres logs every solve, anonymous or
+    authenticated. Library asset accumulates passively. Internal use only.
+  - Anonymous session ID via sessionStorage (NOT localStorage); rotates per
+    tab session; 24-hour merge window on sign-in to prevent shared-device
+    contamination.
+  - /history/list and /history/get/:id endpoints. RLS enforces user-owned
+    reads. Backend uses service_role for inserts.
+  - Lazy revalidation on history load: stale solves re-run Tier 1 (math.js)
+    only. Tier 3 never auto-runs. Badge changes surface as a zinc-500 line
+    under the badge: "Re-verified [date] under engine [build_version]."
+  - Sidebar Sessions list: signed-out / signed-in-empty / signed-in-populated
+    states. Click-to-load hydrates artifact into main workspace.
+  - Fire-and-forget DB writes — solve responses never blocked on logging.
+  - /auth/merge-session: anonymous solves merged into user account on sign-in
+    (24hr window cap). Session ID cleared from sessionStorage post-merge.
+  - Sign-in modal: email input + magic link. Profile button shows email +
+    sign out when authenticated.
+  - BUILD_VERSION: "v4.0.0-history"
 
 🔲 Phase 5 — Batch Solve
 See BATCH_BRIEF.md.
@@ -1203,7 +1235,43 @@ Frontend (/frontend/src/app/page.tsx)
     calls /verify. Both use NEXT_PUBLIC_API_URL env var.
   - wolfram.js: limit kind (podTargets + inferKindFromQuery), implicit diff →
     differentiation kind. toMathjs: infinity normalization (∞ → Infinity).
-  - BUILD_VERSION: "v3.9.3-polish-08"
+  - BUILD_VERSION: "v4.0.0-history"
+
+Phase 4 — History + Library + Auth (new)
+  - backend/supabase.js: Supabase service_role client. insertSolve(),
+    updateSolveVerification(), getUserFromToken() exported. Fire-and-forget
+    pattern used everywhere.
+  - /solve: fire-and-forget insertSolve() after res.json. Reads
+    Authorization header (user_id) and X-Session-Id (anonymous) from
+    request. DB failure never blocks user response.
+  - /history/list (GET): requires auth JWT. Returns last 100 solves for
+    user: id, created_at, raw_input (80-char truncated), mode, badge,
+    problem_kind. Full artifact not returned here.
+  - /history/get/:id (GET): requires auth JWT. 404 if not user-owned. Runs
+    lazy Tier 1 revalidation if build_version is stale and mode=math and
+    normalized_payload.type is not null/unknown. Maps new verification
+    status → badge. Updates row async (fire-and-forget). Returns artifact +
+    revalidation metadata (badge_changed, last_revalidated_at, version).
+    Tier 3 (Wolfram) never runs here.
+  - /auth/merge-session (POST): requires auth JWT. Updates solves rows where
+    session_id=X and user_id IS NULL and created_at > now()-24h. Sets
+    user_id, nulls session_id. Returns { merged: N }.
+  - frontend/src/lib/supabase.ts: singleton Supabase anon client.
+  - frontend/src/lib/session.ts: getSessionId() / clearSessionId() using
+    sessionStorage (never localStorage). Format: anon_${uuid}.
+  - page.tsx: supabase + session imported. HistorySolve type, relativeTime()
+    utility, API_URL constant added. New state: user, historyList,
+    historyLoading, showAuthModal, authEmail, authSent, authLoading,
+    revalidationNote. useEffect subscribes to onAuthStateChange: SIGNED_IN
+    triggers merge-session + fetchHistory + modal close; SIGNED_OUT clears
+    list. loadHistoricalSolve() calls /history/get/:id, hydrates artifact +
+    ghostQuestion + mode, sets revalidationNote if badge changed.
+    handleSignIn() uses signInWithOtp. handleSignOut() calls signOut.
+    doSolve adds X-Session-Id + Authorization headers. Sessions sidebar:
+    3-state (signed out / empty / populated with click-to-load list).
+    Profile bottom: shows email + sign-out when authed; sign-in modal opener
+    when not. Sign-in modal with AnimatePresence. Re-verification note
+    renders below user_reason (zinc-500, date + version).
 ```
 
 ## 11a. What Claude Code Should Never Do
@@ -1225,6 +1293,14 @@ Frontend (/frontend/src/app/page.tsx)
 - Strategic open questions are logged in STRATEGIC_DECISIONS.md. Do not act on them. Reference only when explicitly asked or when a trigger condition is met.
 - Build for an engineer-in-industry use case. The audience is students in technical
   programs. See STRATEGIC_DECISIONS.md for full audience decision reasoning.
+- Expose the solves library as a public route, list, or browseable index
+- Serve cached solutions from the solves table to users who didn't create them
+- Auto-run Wolfram (or any Tier 3 CAS) during history load
+- Use localStorage for anonymous session IDs (use sessionStorage only)
+- Block /solve responses on database write success
+- Add password-based auth, OAuth, or social sign-in providers in Phase 4
+- Build a history page route, search, or filter UI in Phase 4
+- Silently change a verification badge during revalidation without surfacing the change
 
 ---
 ## 11b. What Claude Code Must Always Do
@@ -1234,6 +1310,37 @@ Frontend (/frontend/src/app/page.tsx)
   implemented, and update Section 10 (Current Code State) to reflect the
   new state. Do this before closing the session.
 ---
-## 12. One-Paragraph Product Summary
+## 12. Library & History (Locked)
+
+### The library
+Every solve is logged to the solves table in Supabase. This includes
+anonymous solves. The library is an internal asset — never exposed as a
+public route, never used to cache-serve answers to new users.
+
+The library's value is to Ergo, not to users:
+- Validation coverage decisions (which problem types appear most)
+- Marketing surface (verified solve counts)
+- SEO surface in future phases (canonical problems indexed individually)
+- Analytics signal for product direction
+
+### History
+Per-user surface in the sidebar. Lists solves, click to load. Lazy
+revalidation runs Tier 1 on view if build_version is stale. Badge changes
+are surfaced visibly with a small zinc-500 line under the badge.
+
+### Anonymous session handling
+sessionStorage-based ID, rotates per tab. 24-hour merge window on sign-in.
+Never localStorage. Never persists across tab close.
+
+### Hard rules
+- No public library route, ever
+- No cache-serve of previously verified solutions to new users
+- No Tier 3 (Wolfram) auto-revalidation — manual only
+- No silent badge changes — re-verification is always visibly noted
+- No localStorage for anonymous session IDs
+- The artifact JSON is the source of truth in the solves table
+
+---
+## 13. One-Paragraph Product Summary
 
 Ergo. is a trust-first math and physics solver whose differentiator is visible correctness, not just AI output. It serves anyone who needs a correct, verifiable answer — engineers, researchers, advanced students, professionals. The solve experience is a single vertical flow: input → answer → visible verification state → overview → visible procedural sections → optional depth on demand. Radically minimal: no rail, no duplicated controls, no chat feel, no collapsed steps. Deterministic validation (math.js) is the backbone. Normalization is embedded in the solution call at zero extra cost. CAS is gated behind the paid tier ($12/month Pro). The interface feels like an environment — dark, precise, monochrome zinc, DM Serif Display for identity, Geist Sans for everything functional. The business target is 250–300 Pro users for $2,000+/month net, driven by SEO and a free tier conversion funnel.

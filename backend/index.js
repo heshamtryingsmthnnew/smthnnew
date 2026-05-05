@@ -8,6 +8,7 @@ const { buildProblemArtifact } = require('./artifact');
 const { queryWolfram, compareWithWolfram, inferKindFromQuery } = require('./wolfram');
 const { logCasEvent } = require('./casLogger');
 const { runPhysicsAudit } = require('./physicsAudit');
+const { insertSolve, updateSolveVerification, getUserFromToken, supabase } = require('./supabase');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -18,7 +19,7 @@ const upload = multer({
   },
 });
 
-const BUILD_VERSION = "v3.9.3-polish-08";
+const BUILD_VERSION = "v4.0.0-history";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
@@ -1844,6 +1845,26 @@ Mode: physics`;
       structuredSolution,
       artifact,
     });
+
+    // Fire-and-forget: log solve to DB. Never block the response on this.
+    (async () => {
+      try {
+        const authHeader = req.headers['authorization'] || '';
+        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+        const user = token ? await getUserFromToken(token) : null;
+        const sessionId = req.headers['x-session-id'] || null;
+        await insertSolve({
+          userId: user?.id || null,
+          sessionId,
+          rawInput: rawInput,
+          mode: safeMode,
+          artifact,
+        });
+      } catch (dbErr) {
+        console.error('[solve] DB log failed (non-fatal):', dbErr.message);
+      }
+    })();
+
   } catch (err) {
     console.error('Solve error:', err);
     res.status(500).json({
@@ -2050,6 +2071,171 @@ Example (no math): []`;
   } catch (err) {
     console.error('[extract-problem] Error:', err.message);
     res.status(500).json({ error: 'Failed to extract problems from image.' });
+  }
+});
+
+// ---- /history/list — last 100 solves for authenticated user ----
+app.get('/history/list', async (req, res) => {
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+
+  const user = await getUserFromToken(token);
+  if (!user) return res.status(401).json({ error: 'Invalid token' });
+
+  try {
+    const { data, error } = await supabase
+      .from('solves')
+      .select('id, created_at, raw_input, mode, badge, problem_kind')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    if (error) throw error;
+
+    const items = (data || []).map(row => ({
+      id: row.id,
+      created_at: row.created_at,
+      raw_input: row.raw_input.length > 80 ? row.raw_input.slice(0, 80) + '…' : row.raw_input,
+      mode: row.mode,
+      badge: row.badge,
+      problem_kind: row.problem_kind,
+    }));
+
+    res.json({ solves: items });
+  } catch (err) {
+    console.error('[history/list] error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch history' });
+  }
+});
+
+// ---- /history/get/:id — load a historical solve with lazy Tier 1 revalidation ----
+app.get('/history/get/:id', async (req, res) => {
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+
+  const user = await getUserFromToken(token);
+  if (!user) return res.status(401).json({ error: 'Invalid token' });
+
+  const { id } = req.params;
+
+  try {
+    const { data, error } = await supabase
+      .from('solves')
+      .select('*')
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .single();
+
+    if (error || !data) return res.status(404).json({ error: 'Not found' });
+
+    let artifact = data.artifact;
+    let revalidated = false;
+    let badgeChanged = false;
+
+    // Lazy Tier 1 revalidation — only for math, only if build_version is stale
+    const isStale = data.build_version !== BUILD_VERSION;
+    const npType = artifact?.normalized_payload?.type;
+    const canRevalidate = data.mode === 'math' && npType && npType !== 'unknown' && npType !== null;
+
+    if (isStale && canRevalidate) {
+      try {
+        const payload = artifact.normalized_payload.payload;
+        const answerText = artifact.solution?.final_answer_latex || '';
+        const newVerification = verifyMathAnswer(payload, answerText);
+
+        // Map status → badge (mirrors mapVerificationToBadge in artifact.js)
+        let newBadge;
+        if (newVerification.status === 'validated') newBadge = 'verified';
+        else if (newVerification.status === 'failed') newBadge = 'discrepancy_detected';
+        else if (newVerification.status === 'unavailable') newBadge = npType === 'unknown' ? 'not_verified' : 'checked';
+        else newBadge = 'not_verified';
+
+        const oldBadge = artifact.verification.badge;
+        badgeChanged = newBadge !== oldBadge;
+
+        // Update artifact verification field
+        artifact = {
+          ...artifact,
+          verification: {
+            ...artifact.verification,
+            badge: newBadge,
+          },
+        };
+
+        revalidated = true;
+
+        // Persist update (fire-and-forget)
+        supabase.from('solves').update({
+          artifact,
+          badge: newBadge,
+          last_revalidated_at: new Date().toISOString(),
+          last_revalidated_build_version: BUILD_VERSION,
+          badge_changed: badgeChanged,
+        }).eq('id', id).then(() => {}).catch(err => {
+          console.error('[history/get] revalidation update failed:', err.message);
+        });
+      } catch (revalErr) {
+        console.error('[history/get] revalidation error (non-fatal):', revalErr.message);
+        // Still return artifact as-is on revalidation error
+        supabase.from('solves').update({
+          last_revalidated_at: new Date().toISOString(),
+          last_revalidated_build_version: BUILD_VERSION,
+        }).eq('id', id).then(() => {}).catch(() => {});
+      }
+    } else if (isStale) {
+      // Can't revalidate (physics or unknown kind) — still stamp the revalidation date
+      supabase.from('solves').update({
+        last_revalidated_at: new Date().toISOString(),
+        last_revalidated_build_version: BUILD_VERSION,
+      }).eq('id', id).then(() => {}).catch(() => {});
+    }
+
+    res.json({
+      artifact,
+      raw_input: data.raw_input,
+      mode: data.mode,
+      created_at: data.created_at,
+      revalidated,
+      badge_changed: badgeChanged,
+      last_revalidated_at: revalidated ? new Date().toISOString() : data.last_revalidated_at,
+      last_revalidated_build_version: revalidated ? BUILD_VERSION : data.last_revalidated_build_version,
+    });
+  } catch (err) {
+    console.error('[history/get] error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch solve' });
+  }
+});
+
+// ---- /auth/merge-session — merge anonymous solves into authenticated user ----
+app.post('/auth/merge-session', async (req, res) => {
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+
+  const user = await getUserFromToken(token);
+  if (!user) return res.status(401).json({ error: 'Invalid token' });
+
+  const { session_id } = req.body;
+  if (!session_id) return res.status(400).json({ error: 'session_id required' });
+
+  try {
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data, error } = await supabase
+      .from('solves')
+      .update({ user_id: user.id, session_id: null })
+      .eq('session_id', session_id)
+      .is('user_id', null)
+      .gte('created_at', cutoff)
+      .select('id');
+
+    if (error) throw error;
+
+    res.json({ merged: (data || []).length });
+  } catch (err) {
+    console.error('[auth/merge-session] error:', err.message);
+    res.status(500).json({ error: 'Merge failed' });
   }
 });
 

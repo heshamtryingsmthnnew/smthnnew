@@ -5,6 +5,8 @@ import axios from 'axios';
 import { useEffect, useState, useRef, useCallback, FormEvent, KeyboardEvent, ChangeEvent, Component } from 'react';
 import { DM_Serif_Display, JetBrains_Mono } from 'next/font/google';
 import { motion, AnimatePresence } from 'framer-motion';
+import { supabase } from '../lib/supabase';
+import { getSessionId, clearSessionId } from '../lib/session';
 
 const dmSerifDisplay = DM_Serif_Display({ subsets: ['latin'], weight: '400' });
 const jetbrainsMono = JetBrains_Mono({ subsets: ['latin'] });
@@ -82,6 +84,26 @@ type Artifact = {
     audit_used: boolean;
   };
 };
+
+type HistorySolve = {
+  id: string;
+  created_at: string;
+  raw_input: string;
+  mode: Mode;
+  badge: string;
+  problem_kind: string | null;
+};
+
+function relativeTime(dateStr: string): string {
+  const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 172800) return 'yesterday';
+  return `${Math.floor(diff / 86400)} days ago`;
+}
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 
 const MATH_EXAMPLES = [
   'x^2 + 5x + 6 = 0',
@@ -314,6 +336,16 @@ export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarPeeking, setSidebarPeeking] = useState(false);
   const sidebarOpen = !sidebarCollapsed || sidebarPeeking;
+
+  // Auth + history
+  const [user, setUser] = useState<import('@supabase/supabase-js').User | null>(null);
+  const [historyList, setHistoryList] = useState<HistorySolve[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authSent, setAuthSent] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [revalidationNote, setRevalidationNote] = useState<{ date: string; version: string } | null>(null);
   const sidebarWidth = sidebarOpen ? 240 : 56;
   const contentOffset = sidebarWidth / 2;
 
@@ -349,6 +381,7 @@ export default function Home() {
     pendingAdvancedResult.current = null;
     advancedResultReady.current = false;
     setShowStickyBar(false);
+    setRevalidationNote(null);
   }, []);
 
   useEffect(() => {
@@ -436,6 +469,96 @@ export default function Home() {
     return () => clearTimeout(t);
   }, [extractError]);
 
+  const fetchHistory = useCallback(async (accessToken: string) => {
+    setHistoryLoading(true);
+    try {
+      const res = await axios.get(`${API_URL}/history/list`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      setHistoryList(res.data.solves || []);
+    } catch (e) {
+      console.warn('[history] fetch failed', e);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  // Supabase auth state listener
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      const session = data.session;
+      if (session?.user) {
+        setUser(session.user);
+        fetchHistory(session.access_token);
+      }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      setUser(session?.user ?? null);
+      if (event === 'SIGNED_IN' && session) {
+        // Merge anonymous session into user account (24hr window)
+        const sid = getSessionId();
+        if (sid) {
+          try {
+            await axios.post(`${API_URL}/auth/merge-session`, { session_id: sid }, {
+              headers: { Authorization: `Bearer ${session.access_token}` },
+            });
+            clearSessionId();
+          } catch (e) {
+            console.warn('[merge-session] failed', e);
+          }
+        }
+        fetchHistory(session.access_token);
+        setShowAuthModal(false);
+      }
+      if (event === 'SIGNED_OUT') {
+        setHistoryList([]);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [fetchHistory]);
+
+  const loadHistoricalSolve = async (solveId: string) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) return;
+    try {
+      const res = await axios.get(`${API_URL}/history/get/${solveId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const d = res.data;
+      handleReset();
+      setArtifact(d.artifact);
+      artifactRef.current = d.artifact;
+      setGhostQuestion(d.raw_input);
+      if (d.mode === 'math' || d.mode === 'physics') setMode(d.mode);
+      if (d.badge_changed && d.last_revalidated_at && d.last_revalidated_build_version) {
+        setRevalidationNote({ date: d.last_revalidated_at, version: d.last_revalidated_build_version });
+      }
+    } catch (e) {
+      console.warn('[history] load failed', e);
+    }
+  };
+
+  const handleSignIn = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!authEmail.trim()) return;
+    setAuthLoading(true);
+    try {
+      await supabase.auth.signInWithOtp({ email: authEmail.trim() });
+      setAuthSent(true);
+    } catch (e) {
+      console.warn('[auth] signInWithOtp failed', e);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+  };
+
   const doSolve = async () => {
     if (loading || !question.trim()) return;
 
@@ -459,6 +582,7 @@ export default function Home() {
     setShowFormatHint(false);
     setGraphOpen(false);
     setShowStickyBar(false);
+    setRevalidationNote(null);
     // Reset wedge animation state for new solve
     wedgeTimersRef.current.forEach(clearTimeout);
     wedgeTimersRef.current = [];
@@ -479,7 +603,14 @@ export default function Home() {
     solveTimersRef.current.push(setTimeout(() => setStage('building'), 7000));
 
     try {
-      const res = await axios.post(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'}/solve`, { question, mode });
+      const { data: sessionData } = await supabase.auth.getSession();
+      const authHeaders: Record<string, string> = {
+        'X-Session-Id': getSessionId(),
+        ...(sessionData.session?.access_token
+          ? { Authorization: `Bearer ${sessionData.session.access_token}` }
+          : {}),
+      };
+      const res = await axios.post(`${API_URL}/solve`, { question, mode }, { headers: authHeaders });
 
       // Clear scheduled stage timers
       solveTimersRef.current.forEach(clearTimeout);
@@ -514,10 +645,7 @@ export default function Home() {
           structured_solution: solveArtifact.solution,
         };
 
-        axios.post(
-          `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'}/verify`,
-          verifyPayload
-        ).then((verifyRes) => {
+        axios.post(`${API_URL}/verify`, verifyPayload).then((verifyRes) => {
           const verifyData = verifyRes.data;
           const mergedArtifact: Artifact = {
             ...solveArtifact,
@@ -592,7 +720,7 @@ export default function Home() {
 
     try {
       const response = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'}/extract-problem`,
+        `${API_URL}/extract-problem`,
         formData,
         { headers: { 'Content-Type': 'multipart/form-data' } }
       );
@@ -643,7 +771,7 @@ export default function Home() {
     if (!artifact || loading) return;
     setAdvancedVerifLoading(true);
     try {
-      const res = await axios.post(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'}/verify`, {
+      const res = await axios.post(`${API_URL}/verify`, {
         mode: artifact.mode,
         wolfram_query: artifact.solution?.wolfram_query || null,
         final_answer_latex: artifact.solution?.final_answer_latex || '',
@@ -923,33 +1051,96 @@ export default function Home() {
         {/* Sessions — hidden when collapsed */}
         {sidebarOpen && (
           <div>
-            <div className="px-3 pb-2 text-[11px] uppercase tracking-wider text-zinc-500">Sessions</div>
-            <div className="mx-3 my-2 rounded-md border border-white/[0.04] bg-white/[0.02] p-3">
-              <p className="text-[14px] leading-6 text-zinc-400">Sign in to save and track your sessions</p>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); /* Phase 5: open auth flow */ }}
-                className="mt-2 w-full rounded-md bg-zinc-800 px-3 py-1.5 text-[13px] text-zinc-100 transition-colors hover:bg-zinc-700"
-              >
-                Sign in
-              </button>
+            <div className="px-3 pb-2 text-[11px] uppercase tracking-wider text-zinc-500">
+              {user && historyList.length > 0 ? `Sessions (${historyList.length})` : 'Sessions'}
             </div>
+
+            {/* State A: signed out */}
+            {!user && (
+              <div className="mx-3 my-2 rounded-md border border-white/[0.04] bg-white/[0.02] p-3">
+                <p className="text-[14px] leading-6 text-zinc-400">Sign in to save and track your sessions</p>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setShowAuthModal(true); setAuthSent(false); setAuthEmail(''); }}
+                  className="mt-2 w-full rounded-md bg-zinc-800 px-3 py-1.5 text-[13px] text-zinc-100 transition-colors hover:bg-zinc-700"
+                >
+                  Sign in
+                </button>
+              </div>
+            )}
+
+            {/* State B: signed in, no history */}
+            {user && historyList.length === 0 && !historyLoading && (
+              <p className="px-3 py-2 text-[13px] italic text-zinc-600">Solve a problem to start your history.</p>
+            )}
+
+            {/* State B loading */}
+            {user && historyLoading && (
+              <p className="px-3 py-2 text-[13px] text-zinc-600">Loading…</p>
+            )}
+
+            {/* State C: signed in, has history */}
+            {user && historyList.length > 0 && (
+              <div className="mt-1 max-h-[320px] overflow-y-auto">
+                {historyList.map((item) => {
+                  const badgeColor =
+                    item.badge === 'verified' ? 'bg-emerald-400' :
+                    item.badge === 'discrepancy_detected' ? 'bg-amber-400' :
+                    item.badge === 'checked' ? 'bg-white/40' :
+                    'bg-zinc-600';
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); loadHistoricalSolve(item.id); }}
+                      className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left transition-colors hover:bg-white/[0.03]"
+                    >
+                      <span className={`mt-[5px] h-[6px] w-[6px] flex-shrink-0 rounded-full ${badgeColor}`} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[13px] text-zinc-300">{item.raw_input}</p>
+                        <p className="text-[11px] text-zinc-600">{relativeTime(item.created_at)}</p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
         {/* Bottom items */}
         <div className="mt-auto space-y-1 border-t border-white/[0.06] pt-3">
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); /* Phase 5: open auth flow */ }}
-            className={`flex w-full items-center rounded-md py-2 text-[14px] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300 ${sidebarOpen ? 'gap-3 px-3' : 'justify-center px-0'}`}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-              <circle cx="12" cy="7" r="4" />
-            </svg>
-            {sidebarOpen && <span>Profile</span>}
-          </button>
+          {user ? (
+            <div className={`${sidebarOpen ? 'px-3' : 'px-0'}`}>
+              {sidebarOpen && (
+                <p className="truncate pb-1 text-[12px] text-zinc-600">{user.email}</p>
+              )}
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); handleSignOut(); }}
+                className={`flex w-full items-center rounded-md py-2 text-[14px] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300 ${sidebarOpen ? 'gap-3' : 'justify-center'}`}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                  <polyline points="16 17 21 12 16 7" />
+                  <line x1="21" y1="12" x2="9" y2="12" />
+                </svg>
+                {sidebarOpen && <span>Sign out</span>}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setShowAuthModal(true); setAuthSent(false); setAuthEmail(''); }}
+              className={`flex w-full items-center rounded-md py-2 text-[14px] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300 ${sidebarOpen ? 'gap-3 px-3' : 'justify-center px-0'}`}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+              {sidebarOpen && <span>Profile</span>}
+            </button>
+          )}
           <button
             type="button"
             onClick={(e) => e.stopPropagation()}
@@ -1346,6 +1537,13 @@ export default function Home() {
                   <div className="mt-3 text-sm leading-6 text-zinc-300">
                     {artifact.verification.user_reason}
                   </div>
+                )}
+
+                {/* Re-verification note — shown when a historical solve's badge changed on load */}
+                {revalidationNote && (
+                  <p className="mt-2 text-[12px] text-zinc-500">
+                    Re-verified {new Date(revalidationNote.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} under engine {revalidationNote.version}.
+                  </p>
                 )}
 
                 {/* Action cluster — always visible when no split; ghosts on hover when split is showing */}
@@ -1905,6 +2103,65 @@ export default function Home() {
                 Open in Desmos ↗
               </a>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Sign-in modal */}
+      <AnimatePresence>
+        {showAuthModal && (
+          <motion.div
+            key="auth-modal-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={() => setShowAuthModal(false)}
+          >
+            <motion.div
+              key="auth-modal"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ duration: 0.15 }}
+              className="w-[360px] rounded-xl border border-white/[0.08] bg-zinc-950 p-6 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 className={`${dmSerifDisplay.className} mb-1 text-[22px] text-white`}>Ergo.</h2>
+              <p className="mb-5 text-[13px] text-zinc-400">Sign in to save your solves and view history.</p>
+
+              {authSent ? (
+                <div className="rounded-md border border-white/[0.06] bg-white/[0.03] px-4 py-3 text-[13px] text-zinc-300">
+                  Check your email — a magic link has been sent to <span className="text-white">{authEmail}</span>.
+                </div>
+              ) : (
+                <form onSubmit={handleSignIn}>
+                  <input
+                    type="email"
+                    required
+                    placeholder="your@email.com"
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    className="mb-3 w-full rounded-md border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-[14px] text-white placeholder-zinc-600 outline-none focus:border-white/20"
+                  />
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="w-full rounded-md bg-white px-3 py-2 text-[14px] font-medium text-zinc-950 transition hover:bg-zinc-100 disabled:opacity-50"
+                  >
+                    {authLoading ? 'Sending…' : 'Send magic link'}
+                  </button>
+                </form>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setShowAuthModal(false)}
+                className="mt-4 w-full text-center text-[12px] text-zinc-600 transition hover:text-zinc-400"
+              >
+                Cancel
+              </button>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
