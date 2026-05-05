@@ -94,6 +94,28 @@ type HistorySolve = {
   problem_kind: string | null;
 };
 
+type BatchProblemStatus = 'queued' | 'in_progress' | 'completed' | 'failed';
+
+type BatchProblem = {
+  index: number;
+  text: string;
+  status: BatchProblemStatus;
+  artifact?: Artifact;
+  error?: string;
+};
+
+type BatchSummary = {
+  verified: number;
+  checked: number;
+  discrepancy: number;
+  not_verified: number;
+  failed: number;
+};
+
+type BatchModalStage = 'idle' | 'input' | 'review' | 'processing' | 'complete';
+
+const FREE_BATCH_CAP = 15;
+
 function relativeTime(dateStr: string): string {
   const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
   if (diff < 60) return 'just now';
@@ -346,6 +368,20 @@ export default function Home() {
   const [authSent, setAuthSent] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [revalidationNote, setRevalidationNote] = useState<{ date: string; version: string } | null>(null);
+
+  // Batch solve state
+  const [batchStage, setBatchStage] = useState<BatchModalStage>('idle');
+  const [batchInputType, setBatchInputType] = useState<'text' | 'document'>('text');
+  const [batchText, setBatchText] = useState('');
+  const [batchFile, setBatchFile] = useState<File | null>(null);
+  const [batchMode, setBatchMode] = useState<Mode>('math');
+  const [batchExtracting, setBatchExtracting] = useState(false);
+  const [batchExtractError, setBatchExtractError] = useState<string | null>(null);
+  const [batchDraftProblems, setBatchDraftProblems] = useState<string[]>([]);
+  const [batchProblems, setBatchProblems] = useState<BatchProblem[]>([]);
+  const [batchSummary, setBatchSummary] = useState<BatchSummary | null>(null);
+  const [batchExpandedIndex, setBatchExpandedIndex] = useState<number | null>(null);
+  const [showBatchResults, setShowBatchResults] = useState(false);
   const sidebarWidth = sidebarOpen ? 240 : 56;
   const contentOffset = sidebarWidth / 2;
 
@@ -557,6 +593,130 @@ export default function Home() {
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
+  };
+
+  // Warn user if they try to leave while a batch is running
+  useEffect(() => {
+    if (batchStage !== 'processing') return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [batchStage]);
+
+  const openBatchModal = () => {
+    setBatchStage('input');
+    setBatchText('');
+    setBatchFile(null);
+    setBatchExtractError(null);
+    setBatchDraftProblems([]);
+    setBatchMode(mode);
+    setBatchInputType('text');
+  };
+
+  const closeBatchModal = () => setBatchStage('idle');
+
+  const handleBatchExtract = async () => {
+    if (batchInputType === 'text' && !batchText.trim()) return;
+    if (batchInputType === 'document' && !batchFile) return;
+    setBatchExtracting(true);
+    setBatchExtractError(null);
+    try {
+      let body: Record<string, unknown> = { mode: batchMode, input_type: batchInputType };
+      if (batchInputType === 'text') {
+        body.text = batchText;
+      } else if (batchFile) {
+        const arrayBuf = await batchFile.arrayBuffer();
+        const b64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuf)));
+        body = { ...body, document: b64, mimetype: batchFile.type };
+      }
+      const res = await axios.post(`${API_URL}/batch/extract`, body);
+      const problems: string[] = res.data.problems || [];
+      if (problems.length === 0) {
+        setBatchExtractError('No problems found. Try pasting the text directly.');
+        return;
+      }
+      setBatchDraftProblems(problems);
+      setBatchStage('review');
+    } catch {
+      setBatchExtractError('Extraction failed. Try pasting the text directly.');
+    } finally {
+      setBatchExtracting(false);
+    }
+  };
+
+  const startBatchSolve = async () => {
+    const problems = batchDraftProblems.filter(p => p.trim());
+    if (problems.length === 0) return;
+    if (problems.length > FREE_BATCH_CAP) {
+      setBatchExtractError(`Free batch limit is ${FREE_BATCH_CAP} problems. Remove ${problems.length - FREE_BATCH_CAP} to continue.`);
+      return;
+    }
+
+    const initialProblems: BatchProblem[] = problems.map((text, index) => ({ index, text, status: 'queued' }));
+    setBatchProblems(initialProblems);
+    setBatchSummary(null);
+    setBatchExpandedIndex(null);
+    setBatchStage('processing');
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const headers: Record<string, string> = { 'X-Session-Id': getSessionId(), 'Content-Type': 'application/json' };
+    if (sessionData.session?.access_token) {
+      headers['Authorization'] = `Bearer ${sessionData.session.access_token}`;
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/batch/solve`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ problems, mode: batchMode }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: 'Batch failed' }));
+        setBatchStage('idle');
+        setBatchExtractError(err.error || 'Batch failed. Check your quota and try again.');
+        setBatchStage('review');
+        return;
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) { setBatchStage('complete'); return; }
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            if (event.type === 'problem_started') {
+              setBatchProblems(prev => prev.map(p => p.index === event.index ? { ...p, status: 'in_progress' } : p));
+            } else if (event.type === 'problem_completed') {
+              setBatchProblems(prev => prev.map(p => p.index === event.index ? { ...p, status: 'completed', artifact: event.artifact } : p));
+            } else if (event.type === 'problem_failed') {
+              setBatchProblems(prev => prev.map(p => p.index === event.index ? { ...p, status: 'failed', error: event.error } : p));
+            } else if (event.type === 'batch_completed') {
+              setBatchSummary(event.summary);
+              setBatchStage('complete');
+              // Discrepancy-first: auto-expand first discrepant problem
+              setBatchProblems(prev => {
+                const firstDisc = prev.find(p => p.artifact?.verification?.badge === 'discrepancy_detected');
+                if (firstDisc) setBatchExpandedIndex(firstDisc.index);
+                return prev;
+              });
+            }
+          } catch { /* skip malformed event */ }
+        }
+      }
+    } catch (err) {
+      console.error('[batch] stream error:', err);
+      setBatchStage('complete');
+    }
   };
 
   const doSolve = async () => {
@@ -1047,6 +1207,31 @@ export default function Home() {
         </div>
 
         {sidebarOpen && <div className="my-4 border-t border-white/[0.08]" />}
+
+        {/* Batch indicator — shown when processing or complete */}
+        {sidebarOpen && (batchStage === 'processing' || batchStage === 'complete') && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setShowBatchResults(true); }}
+            className="mx-3 mb-3 flex w-[calc(100%-24px)] items-center gap-2 rounded-md border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-left transition-colors hover:bg-white/[0.05]"
+          >
+            {batchStage === 'processing' ? (
+              <>
+                <div className="h-2 w-2 flex-shrink-0 animate-pulse rounded-full bg-amber-400" />
+                <span className="truncate text-[12px] text-zinc-300">
+                  Batch: {batchProblems.filter(p => p.status === 'completed' || p.status === 'failed').length} / {batchProblems.length} done
+                </span>
+              </>
+            ) : (
+              <>
+                <div className={`h-2 w-2 flex-shrink-0 rounded-full ${batchSummary && batchSummary.discrepancy > 0 ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                <span className="truncate text-[12px] text-zinc-300">
+                  Batch: {batchSummary ? `${batchSummary.verified}✓ ${batchSummary.checked}~ ${batchSummary.discrepancy}⚠` : 'complete'}
+                </span>
+              </>
+            )}
+          </button>
+        )}
 
         {/* Sessions — hidden when collapsed */}
         {sidebarOpen && (
@@ -1857,6 +2042,17 @@ export default function Home() {
             >
               Physics
             </button>
+
+            <span className="text-zinc-700">·</span>
+
+            <button
+              type="button"
+              onClick={openBatchModal}
+              disabled={loading}
+              className="pb-1 text-sm text-zinc-600 transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Batch solve
+            </button>
           </div>
 
           {/* Interactive tab */}
@@ -2162,6 +2358,298 @@ export default function Home() {
                 Cancel
               </button>
             </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Batch modal — Stages: input, review */}
+      <AnimatePresence>
+        {(batchStage === 'input' || batchStage === 'review') && (
+          <motion.div
+            key="batch-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-black/70 backdrop-blur-sm pt-16 pb-8"
+            onClick={() => setBatchStage('idle')}
+          >
+            <motion.div
+              key="batch-modal"
+              initial={{ opacity: 0, y: -12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -12 }}
+              transition={{ duration: 0.15 }}
+              className="w-full max-w-2xl rounded-xl border border-white/[0.08] bg-zinc-950 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between border-b border-white/[0.06] px-6 py-4">
+                <div>
+                  <h2 className="text-[15px] font-medium text-white">
+                    {batchStage === 'input' ? 'Batch solve' : `Review problems (${batchDraftProblems.length})`}
+                  </h2>
+                  {batchStage === 'input' && (
+                    <p className="mt-0.5 text-[12px] text-zinc-500">Submit a problem set — we'll split and solve each problem individually.</p>
+                  )}
+                </div>
+                <button type="button" onClick={closeBatchModal} className="rounded p-1 text-zinc-600 hover:text-zinc-300">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Stage 1: Input */}
+              {batchStage === 'input' && (
+                <div className="p-6">
+                  {/* Mode + Input type selectors */}
+                  <div className="mb-4 flex items-center gap-4">
+                    <div className="flex gap-2">
+                      {(['math', 'physics'] as Mode[]).map(m => (
+                        <button key={m} type="button" onClick={() => setBatchMode(m)}
+                          className={`rounded-md px-3 py-1 text-[13px] transition-colors ${batchMode === m ? 'bg-white text-zinc-950' : 'bg-white/[0.06] text-zinc-400 hover:text-zinc-200'}`}>
+                          {m.charAt(0).toUpperCase() + m.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="ml-auto flex gap-2">
+                      {(['text', 'document'] as const).map(t => (
+                        <button key={t} type="button" onClick={() => setBatchInputType(t)}
+                          className={`rounded-md px-3 py-1 text-[13px] transition-colors ${batchInputType === t ? 'bg-white/[0.10] text-white' : 'text-zinc-500 hover:text-zinc-300'}`}>
+                          {t === 'text' ? 'Paste text' : 'Upload file'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {batchInputType === 'text' ? (
+                    <textarea
+                      value={batchText}
+                      onChange={e => setBatchText(e.target.value)}
+                      placeholder="Paste your problem set here. We'll split them automatically."
+                      rows={8}
+                      className="w-full resize-none rounded-md border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-[14px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-white/20"
+                    />
+                  ) : (
+                    <div
+                      className="flex h-32 cursor-pointer flex-col items-center justify-center rounded-md border border-dashed border-white/[0.12] bg-white/[0.02] transition-colors hover:border-white/20"
+                      onClick={() => document.getElementById('batch-file-input')?.click()}
+                    >
+                      <input id="batch-file-input" type="file" accept=".pdf,.docx,.jpg,.jpeg,.png,.webp" className="hidden"
+                        onChange={e => setBatchFile(e.target.files?.[0] || null)} />
+                      {batchFile ? (
+                        <p className="text-[13px] text-zinc-300">{batchFile.name}</p>
+                      ) : (
+                        <>
+                          <p className="text-[13px] text-zinc-400">Click to select file</p>
+                          <p className="mt-1 text-[11px] text-zinc-600">PDF, DOCX, or image</p>
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {batchExtractError && (
+                    <p className="mt-3 text-[12px] text-amber-400">{batchExtractError}</p>
+                  )}
+
+                  <div className="mt-4 flex justify-end">
+                    <button type="button" onClick={handleBatchExtract} disabled={batchExtracting || (batchInputType === 'text' ? !batchText.trim() : !batchFile)}
+                      className="rounded-md bg-white px-5 py-2 text-[14px] font-medium text-zinc-950 transition hover:bg-zinc-100 disabled:opacity-40">
+                      {batchExtracting ? 'Extracting…' : 'Continue →'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Stage 2: Review */}
+              {batchStage === 'review' && (
+                <div className="p-6">
+                  {/* Counter */}
+                  <div className="mb-3 flex items-center justify-between">
+                    <span className={`text-[12px] font-medium ${
+                      batchDraftProblems.length >= FREE_BATCH_CAP ? 'text-red-400' :
+                      batchDraftProblems.length >= FREE_BATCH_CAP - 3 ? 'text-amber-400' :
+                      'text-zinc-400'
+                    }`}>
+                      {batchDraftProblems.length} problem{batchDraftProblems.length !== 1 ? 's' : ''} — max {FREE_BATCH_CAP}
+                    </span>
+                    <button type="button" onClick={() => setBatchStage('input')} className="text-[12px] text-zinc-600 hover:text-zinc-300">← Back</button>
+                  </div>
+
+                  <div className="max-h-[400px] space-y-2 overflow-y-auto">
+                    {batchDraftProblems.map((prob, i) => (
+                      <div key={i} className="flex gap-2">
+                        <span className="mt-2.5 w-5 flex-shrink-0 text-center text-[11px] text-zinc-600">{i + 1}</span>
+                        <textarea
+                          value={prob}
+                          onChange={e => { const arr = [...batchDraftProblems]; arr[i] = e.target.value; setBatchDraftProblems(arr); }}
+                          rows={2}
+                          className="flex-1 resize-none rounded-md border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-[13px] text-zinc-200 outline-none focus:border-white/15"
+                        />
+                        <button type="button" onClick={() => setBatchDraftProblems(prev => prev.filter((_, j) => j !== i))}
+                          className="mt-1.5 self-start rounded p-1 text-zinc-600 hover:text-zinc-300">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                          </svg>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button type="button" onClick={() => setBatchDraftProblems(prev => [...prev, ''])}
+                    className="mt-3 text-[12px] text-zinc-600 hover:text-zinc-300">
+                    + Add problem
+                  </button>
+
+                  {batchExtractError && (
+                    <p className="mt-3 text-[12px] text-amber-400">{batchExtractError}</p>
+                  )}
+
+                  <div className="mt-4 flex justify-end">
+                    <button type="button" onClick={startBatchSolve}
+                      disabled={batchDraftProblems.filter(p => p.trim()).length === 0 || batchDraftProblems.filter(p => p.trim()).length > FREE_BATCH_CAP}
+                      className="rounded-md bg-white px-5 py-2 text-[14px] font-medium text-zinc-950 transition hover:bg-zinc-100 disabled:opacity-40">
+                      Solve {batchDraftProblems.filter(p => p.trim()).length} problem{batchDraftProblems.filter(p => p.trim()).length !== 1 ? 's' : ''}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Batch result view */}
+      <AnimatePresence>
+        {showBatchResults && (batchStage === 'processing' || batchStage === 'complete') && (
+          <motion.div
+            key="batch-results"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[55] flex flex-col overflow-hidden bg-zinc-950"
+            style={{ left: sidebarWidth }}
+          >
+            {/* Result header */}
+            <div className="flex flex-shrink-0 items-center justify-between border-b border-white/[0.06] px-6 py-4">
+              <div>
+                <div className="flex items-center gap-3">
+                  <h2 className="text-[15px] font-medium text-white">
+                    {batchStage === 'processing' ? 'Batch running…' : 'Batch complete'}
+                  </h2>
+                  {batchSummary && (
+                    <div className="flex items-center gap-3 text-[12px]">
+                      {batchSummary.verified > 0 && <span className="text-emerald-400">{batchSummary.verified} verified</span>}
+                      {batchSummary.checked > 0 && <span className="text-zinc-400">{batchSummary.checked} checked</span>}
+                      {batchSummary.discrepancy > 0 && <span className="text-amber-400">{batchSummary.discrepancy} discrepancy</span>}
+                      {batchSummary.not_verified > 0 && <span className="text-zinc-500">{batchSummary.not_verified} unverified</span>}
+                      {batchSummary.failed > 0 && <span className="text-red-400">{batchSummary.failed} failed</span>}
+                    </div>
+                  )}
+                </div>
+                {batchStage === 'complete' && batchSummary && batchSummary.discrepancy > 0 && (
+                  <p className="mt-0.5 text-[12px] text-amber-400">{batchSummary.discrepancy} problem{batchSummary.discrepancy !== 1 ? 's' : ''} may need your attention.</p>
+                )}
+              </div>
+              <button type="button" onClick={() => setShowBatchResults(false)} className="rounded p-1 text-zinc-600 hover:text-zinc-300">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Problem list */}
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              <div className="mx-auto max-w-2xl space-y-3">
+                {batchProblems.map((bp) => {
+                  const badge = bp.artifact?.verification?.badge;
+                  const badgeColor = badge === 'verified' ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' :
+                    badge === 'discrepancy_detected' ? 'text-amber-400 border-amber-500/30 bg-amber-500/10' :
+                    badge === 'checked' ? 'text-zinc-300 border-white/20 bg-white/[0.06]' :
+                    'text-zinc-500 border-white/10 bg-white/[0.04]';
+                  const badgeDot = badge === 'verified' ? 'bg-emerald-400' :
+                    badge === 'discrepancy_detected' ? 'bg-amber-400' :
+                    badge === 'checked' ? 'bg-white/40' : 'bg-zinc-600';
+                  const isExpanded = batchExpandedIndex === bp.index;
+
+                  return (
+                    <div key={bp.index} className={`rounded-lg border transition-colors ${
+                      badge === 'discrepancy_detected' ? 'border-amber-500/20' : 'border-white/[0.06]'
+                    } bg-white/[0.02]`}>
+                      {/* Card header — always visible, click to expand */}
+                      <button
+                        type="button"
+                        onClick={() => setBatchExpandedIndex(isExpanded ? null : bp.index)}
+                        className="flex w-full items-start gap-3 px-4 py-3 text-left"
+                      >
+                        <span className="mt-1 flex-shrink-0 text-[12px] text-zinc-600">{bp.index + 1}</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-[13px] text-zinc-200">{bp.text}</p>
+                          {bp.status === 'in_progress' && (
+                            <p className="mt-1 text-[11px] text-zinc-500">Solving…</p>
+                          )}
+                          {bp.status === 'queued' && (
+                            <p className="mt-1 text-[11px] text-zinc-600">Queued</p>
+                          )}
+                          {bp.status === 'failed' && (
+                            <p className="mt-1 text-[11px] text-red-400">Failed — {bp.error}</p>
+                          )}
+                          {bp.artifact && (
+                            <p className="mt-1 text-[12px] text-zinc-400">{bp.artifact.verification.user_reason}</p>
+                          )}
+                        </div>
+                        {bp.status === 'in_progress' && (
+                          <div className="mt-1 h-2 w-2 flex-shrink-0 animate-pulse rounded-full bg-zinc-400" />
+                        )}
+                        {bp.artifact && (
+                          <span className={`flex-shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ${badgeColor}`}>
+                            {badge === 'verified' ? 'Verified' : badge === 'discrepancy_detected' ? 'Discrepancy' : badge === 'checked' ? 'Checked' : 'Unverified'}
+                          </span>
+                        )}
+                        {!bp.artifact && bp.status === 'queued' && (
+                          <div className={`mt-1.5 h-2 w-2 flex-shrink-0 rounded-full ${badgeDot}`} />
+                        )}
+                      </button>
+
+                      {/* Expanded: full solve surface */}
+                      {isExpanded && bp.artifact && (
+                        <div className="border-t border-white/[0.05] px-4 pb-4 pt-3">
+                          {/* Final answer */}
+                          <div className="mb-3 rounded-md border border-white/[0.08] bg-white/[0.03] px-4 py-3">
+                            <div className="[&_.katex]:text-[1.3em]">
+                              <BlockMath math={bp.artifact.solution.final_answer_latex || '?'} />
+                            </div>
+                          </div>
+
+                          {/* Verification badge */}
+                          <div className={`mb-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[12px] ${badgeColor}`}>
+                            <span>{badge === 'verified' ? 'Verified' : badge === 'discrepancy_detected' ? 'Discrepancy detected' : badge === 'checked' ? 'Checked' : 'Not verified'}</span>
+                          </div>
+
+                          {/* Overview */}
+                          {bp.artifact.solution.overview && (
+                            <p className="mb-3 text-[13px] text-zinc-400">{bp.artifact.solution.overview}</p>
+                          )}
+
+                          {/* Solution sections */}
+                          <div className="space-y-3">
+                            {bp.artifact.solution.sections.map((sec, si) => (
+                              <div key={si} className="border-l border-white/[0.06] pl-3">
+                                <p className="mb-1 text-[13px] font-medium text-zinc-200">{sec.title}</p>
+                                <div className="[&_.katex]:text-[1.05em] text-zinc-300 overflow-x-auto">
+                                  {sec.summary_latex && <BlockMath math={sec.summary_latex} />}
+                                </div>
+                                {sec.explanation && <p className="mt-1 text-[13px] leading-6 text-zinc-400">{sec.explanation}</p>}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

@@ -19,7 +19,7 @@ const upload = multer({
   },
 });
 
-const BUILD_VERSION = "v4.0.0-history";
+const BUILD_VERSION = "v4.1.0-batch";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
@@ -1533,6 +1533,236 @@ function detectMixedProseInput(input) {
   return hasMath && hasProseWords && wordCount > 4;
 }
 
+// Core solve logic — shared by /solve and /batch/solve.
+// Returns { artifact, answer, structuredSolution, verification, mathPayload, safeMode }.
+async function solveOne(rawInput, mode) {
+  const question = sanitizeCommonTypos(rawInput);
+  const hadTypos = question !== String(rawInput).trim();
+  const isMixedProse = detectMixedProseInput(question);
+  const safeMode = mode === 'physics' ? 'physics' : 'math';
+
+  let systemPrompt;
+  let temperature;
+
+  if (safeMode === 'math') {
+    systemPrompt = `You are a precise math solver. Your output is read by advanced undergrad and graduate students who are technically literate — they know the mechanics, they want the reasoning made explicit, not explained from scratch.
+
+Rules:
+- Return valid JSON only. No markdown, no code fences, no text outside the JSON.
+- Never round irrational roots. Use exact form: sqrt(), fractions, or LaTeX notation.
+- For any equation, move ALL terms to one side to get standard form (= 0) before solving.
+- For quadratics: compute the discriminant D = b²-4ac explicitly. If D is not a perfect square, use the quadratic formula — do not guess factor pairs.
+- Titles must name the operation precisely (e.g. "Factor the quadratic expression", "Apply the quadratic formula", "Isolate x") — never "Step 1", "Step 2", etc.
+- explanation: state what was done and why it follows from the previous step. Assume the student knows the procedure — the explanation should justify the move, not describe it. 2–3 sentences, dense.
+- concept: name the principle, then trace exactly how it maps to this specific step. Name the components — what plays the role of f, g, u, v, or whatever the principle requires — and show the substitution or mapping explicitly. End with why the result follows. 2–3 sentences.
+  For steps involving composition, substitution, or multi-part rules (chain rule, quotient rule, integration by parts): always trace the component mapping.
+  For direct applications of standard derivatives or identities (d/dx[cos(x)] = -sin(x), sin²+cos²=1): just name the rule and state it applies directly — no forced tracing.
+  Never restate what was already shown in summary_latex. The concept field explains the why and the how, not the what.
+- overview: one sentence identifying the specific expression or function being worked on and the method used.
+- normalized_expression: plain math notation only — no LaTeX environments, no \\begin{cases}, no \\text{}. For systems, separate with semicolons.
+- graphable: true ONLY if the result is an explicit function y=f(x), a parametric curve, or an inequality that Desmos can plot directly.
+- graph_expression: if graphable, the exact Desmos-ready string. Empty string if graphable is false.
+- wolfram_query: a Wolfram Alpha-ready query string for this problem, or null for equations/systems.`;
+    temperature = 0.2;
+  } else {
+    systemPrompt = `You are a precise physics solver. Your output is read by advanced undergrad and graduate students who know introductory physics — they understand the principles, they want to see how the framework is applied, not have it explained from first principles.
+
+Rules:
+- Return valid JSON only. No markdown, no code fences, no text outside the JSON.
+- Always include units in the final answer and in any intermediate results where units matter.
+- Titles must name the physical operation precisely — never "Step 1", "Step 2", etc.
+- summary_latex: the governing equation for this step in LaTeX, with variables defined inline if non-standard.
+- explanation: state what was done, which physical constraint or conservation law drives it, and how the algebra follows. 2–3 sentences.
+- concept: name the law or principle, then trace how it maps to this specific physical configuration. 2–3 sentences.
+- overview: one sentence describing the specific physical scenario and what is being found.
+- normalized_expression: the core governing equation in plain notation, no LaTeX environments.
+- graphable: true ONLY if the result is an explicit function y=f(x). When in doubt, set false.
+- graph_expression: if graphable, the Desmos-ready string. Empty string if false.`;
+    temperature = 0.3;
+  }
+
+  let rawModelOutput = '';
+  let structuredSolution = { final_answer_latex: '', overview: '', sections: [] };
+  let answer = '';
+  let normalizedExpression = null;
+
+  if (safeMode === 'math') {
+    const modelQuestion = preNormalizeEquation(normalizeQuestionForModel(question));
+    const discriminantHint = getDiscriminantHint(modelQuestion);
+    const userPrompt = `Solve the following problem and return a JSON object with this exact structure:
+{
+  "final_answer_latex": "final answer in LaTeX notation",
+  "normalized_expression": "plain math only — no LaTeX environments, no \\text{}, no \\begin{cases}. Systems: semicolon-separated.",
+  "wolfram_query": "Wolfram Alpha query string or null for equations/systems",
+  "graphable": false,
+  "graph_expression": "",
+  "overview": "one sentence — problem type and method",
+  "sections": [
+    {
+      "title": "precise operation name (not Step 1/2/3)",
+      "summary_latex": "key equation for this step in LaTeX",
+      "explanation": "what was done and why it follows — justify the move, not describe it. 2–3 sentences.",
+      "concept": "theorem or property that licenses this step, applied directly to this problem. 1–2 sentences."
+    }
+  ]
+}
+
+Problem: ${modelQuestion}${discriminantHint ? `\n${discriminantHint}` : ''}
+Mode: math`;
+
+    const message = await client.messages.create({
+      model: SOLUTION_MODEL,
+      max_tokens: 1200,
+      temperature,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    });
+
+    rawModelOutput = message.content[0].text || '';
+
+    try {
+      const parsed = extractJsonObject(rawModelOutput);
+      normalizedExpression = (parsed && typeof parsed.normalized_expression === 'string')
+        ? parsed.normalized_expression.trim() : null;
+
+      const wolframQueryFromModel = (
+        parsed && typeof parsed.wolfram_query === 'string' &&
+        parsed.wolfram_query !== 'null' && parsed.wolfram_query.trim()
+      ) ? parsed.wolfram_query.trim() : null;
+
+      const normalizedSolution = normalizeStructuredSolution(parsed);
+      if (normalizedSolution && normalizedSolution.final_answer_latex &&
+          Array.isArray(normalizedSolution.sections) && normalizedSolution.sections.length > 0) {
+        normalizedSolution.sections = (Array.isArray(parsed.sections) ? parsed.sections : []).map((sec) => ({
+          title: typeof sec.title === 'string' ? sec.title.trim() : 'Explanation',
+          summary_latex: typeof sec.summary_latex === 'string' ? sec.summary_latex.trim() : '',
+          explanation: typeof sec.explanation === 'string' ? sec.explanation.trim() : '',
+          concept: typeof sec.concept === 'string' ? sec.concept.trim() : '',
+        })).filter(s => s.title || s.summary_latex || s.explanation);
+
+        structuredSolution = normalizedSolution;
+        structuredSolution.graphable = parsed?.graphable === true;
+        structuredSolution.graph_expression = typeof parsed?.graph_expression === 'string' ? parsed.graph_expression.trim() : '';
+        structuredSolution.wolfram_query = wolframQueryFromModel;
+        answer = buildLegacyAnswerFromStructuredSolution(structuredSolution);
+      } else {
+        answer = rawModelOutput;
+      }
+    } catch {
+      answer = rawModelOutput;
+    }
+  } else {
+    const physicsUserPrompt = `Solve the following physics problem and return a JSON object with this exact structure:
+{
+  "final_answer_latex": "final answer in LaTeX notation, with units",
+  "normalized_expression": "the core governing equation in plain notation",
+  "graphable": false,
+  "graph_expression": "",
+  "overview": "one sentence — physical system, quantity being solved, framework used",
+  "sections": [
+    {
+      "title": "precise physical operation (not Step 1/2/3)",
+      "summary_latex": "governing equation for this step in LaTeX",
+      "explanation": "what was done, which law or constraint drives it, how the math follows. 2–3 sentences.",
+      "concept": "the law or principle and why it applies to this specific configuration. 1–2 sentences."
+    }
+  ]
+}
+
+Problem: ${question}
+Mode: physics`;
+
+    const physicsMessage = await client.messages.create({
+      model: SOLUTION_MODEL,
+      max_tokens: 1200,
+      temperature,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: physicsUserPrompt }],
+    });
+
+    rawModelOutput = physicsMessage.content[0].text || '';
+
+    try {
+      const parsed = extractJsonObject(rawModelOutput);
+      normalizedExpression = (parsed && typeof parsed.normalized_expression === 'string')
+        ? parsed.normalized_expression.trim() : null;
+
+      if (parsed && parsed.final_answer_latex && Array.isArray(parsed.sections) && parsed.sections.length > 0) {
+        structuredSolution = {
+          final_answer_latex: parsed.final_answer_latex,
+          overview: parsed.overview || '',
+          sections: parsed.sections.map((sec) => ({
+            title: typeof sec.title === 'string' ? sec.title.trim() : 'Explanation',
+            summary_latex: typeof sec.summary_latex === 'string' ? sec.summary_latex.trim() : '',
+            explanation: typeof sec.explanation === 'string' ? sec.explanation.trim() : '',
+            concept: typeof sec.concept === 'string' ? sec.concept.trim() : '',
+          })).filter(s => s.title || s.summary_latex || s.explanation),
+          graphable: parsed.graphable === true,
+          graph_expression: typeof parsed.graph_expression === 'string' ? parsed.graph_expression.trim() : '',
+        };
+        answer = buildLegacyAnswerFromStructuredSolution(structuredSolution);
+      } else {
+        answer = rawModelOutput;
+      }
+    } catch {
+      answer = rawModelOutput;
+    }
+  }
+
+  const normalized = extractMathPayload(question);
+  const mathPayload = normalized.payload;
+
+  let verification;
+  let normalizedUsed = false;
+
+  if (safeMode === 'math') {
+    try {
+      if (normalizedExpression) {
+        const verifierInput = stripLatexEnvironments(normalizedExpression);
+        verification = verifyMathAnswer(verifierInput, answer);
+        normalizedUsed = true;
+        if (verification.status === 'unavailable') {
+          const rawVerification = verifyMathAnswer(mathPayload, answer);
+          if (rawVerification.status !== 'unavailable') {
+            verification = rawVerification;
+            normalizedUsed = false;
+          }
+        }
+      } else {
+        verification = verifyMathAnswer(mathPayload, answer);
+      }
+    } catch {
+      verification = { status: 'unavailable', reason: 'verification_error' };
+    }
+  } else {
+    verification = { status: 'unavailable', reason: 'physics_not_supported' };
+  }
+
+  if (safeMode === 'math' && verification.status === 'unavailable') {
+    if (isMixedProse) verification = { ...verification, reason: 'mixed_prose_input' };
+    else if (hadTypos) verification = { ...verification, reason: 'input_may_have_typos' };
+  }
+
+  const normalizedForArtifact = { ...normalized, payload: normalizedExpression || normalized.payload };
+
+  const artifact = buildProblemArtifact({
+    question,
+    mode: safeMode,
+    buildVersion: BUILD_VERSION,
+    normalized: normalizedForArtifact,
+    answer,
+    structuredSolution,
+    verification,
+    llmCalls: 1,
+    normalizedUsed,
+    advancedVerificationUsed: false,
+    casResult: null,
+    auditResult: null,
+  });
+
+  return { artifact, answer, structuredSolution, verification, mathPayload, safeMode };
+}
+
 app.post('/solve', async (req, res) => {
   const { question: rawInput, mode } = req.body;
 
@@ -2237,6 +2467,187 @@ app.post('/auth/merge-session', async (req, res) => {
     console.error('[auth/merge-session] error:', err.message);
     res.status(500).json({ error: 'Merge failed' });
   }
+});
+
+// ---- /batch/extract — parse text or document into array of problems ----
+app.post('/batch/extract', async (req, res) => {
+  const { mode, input_type, text, document: docBase64, mimetype } = req.body;
+
+  try {
+    let sourceText = '';
+
+    if (input_type === 'text') {
+      sourceText = text || '';
+    } else if (input_type === 'document') {
+      if (!docBase64) return res.status(400).json({ error: 'No document provided' });
+      const buf = Buffer.from(docBase64, 'base64');
+
+      if (mimetype === 'application/pdf') {
+        const pdfParse = require('pdf-parse');
+        const data = await pdfParse(buf);
+        sourceText = data.text || '';
+      } else if (mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+                 mimetype === 'application/msword') {
+        const mammoth = require('mammoth');
+        const result = await mammoth.extractRawText({ buffer: buf });
+        sourceText = result.value || '';
+      } else if (mimetype && mimetype.startsWith('image/')) {
+        // Vision extraction — reuse image path
+        const safeMediaType = mimetype;
+        const message = await client.messages.create({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 1024,
+          system: 'You are a math problem extractor. Extract all math/physics problems from the image as a JSON array of strings. Return ONLY the JSON array, no other text.',
+          messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: safeMediaType, data: docBase64 } }] }],
+        });
+        const raw = message.content[0].text?.trim() || '[]';
+        try {
+          const problems = JSON.parse(raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim());
+          return res.json({ problems: Array.isArray(problems) ? problems.slice(0, 50) : [], truncated: Array.isArray(problems) && problems.length > 50 });
+        } catch {
+          return res.json({ problems: [], truncated: false });
+        }
+      } else {
+        return res.status(400).json({ error: 'Unsupported document type' });
+      }
+    } else {
+      return res.status(400).json({ error: 'Invalid input_type' });
+    }
+
+    if (!sourceText.trim()) return res.json({ problems: [], truncated: false });
+
+    // Ask Claude to split the text into individual problems
+    const safeMode = mode === 'physics' ? 'physics' : 'math';
+    const splitMessage = await client.messages.create({
+      model: SOLUTION_MODEL,
+      max_tokens: 2048,
+      temperature: 0,
+      system: `You split ${safeMode} problem sets into individual problems. Return a JSON array of strings — one string per problem. Each string should be a complete, self-contained problem statement. Remove numbering prefixes (1., 2., a), b), etc.). Return ONLY the JSON array, no other text, no markdown fences.`,
+      messages: [{ role: 'user', content: `Split these into individual problems:\n\n${sourceText.slice(0, 8000)}` }],
+    });
+
+    const rawSplit = splitMessage.content[0].text?.trim() || '[]';
+    let problems = [];
+    try {
+      const cleaned = rawSplit.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+      const parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed)) {
+        problems = parsed.filter(p => typeof p === 'string' && p.trim().length > 0).map(p => p.trim());
+      }
+    } catch {
+      // Fall back: split by newlines, filter non-empty
+      problems = sourceText.split('\n').map(l => l.trim()).filter(l => l.length > 4);
+    }
+
+    const truncated = problems.length > 50;
+    res.json({ problems: problems.slice(0, 50), truncated });
+  } catch (err) {
+    console.error('[batch/extract] error:', err.message);
+    res.status(500).json({ error: 'Extraction failed' });
+  }
+});
+
+// ---- /batch/solve — SSE streaming batch solve ----
+const FREE_BATCH_CAP = 15;
+const PRO_BATCH_CAP = 50;
+const DAILY_QUOTA = 15;
+
+async function getDailyUsage(userId, sessionId) {
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  let query = supabase.from('solves').select('id', { count: 'exact', head: true }).gte('created_at', cutoff);
+  if (userId) query = query.eq('user_id', userId);
+  else if (sessionId) query = query.eq('session_id', sessionId);
+  else return 0;
+  const { count } = await query;
+  return count || 0;
+}
+
+app.post('/batch/solve', async (req, res) => {
+  const { problems, mode } = req.body;
+  if (!Array.isArray(problems) || problems.length === 0) {
+    return res.status(400).json({ error: 'No problems provided' });
+  }
+
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const user = token ? await getUserFromToken(token) : null;
+  const sessionId = req.headers['x-session-id'] || null;
+
+  // Server-side cap
+  if (problems.length > PRO_BATCH_CAP) {
+    return res.status(400).json({ error: `Batch capped at ${PRO_BATCH_CAP} problems.` });
+  }
+  if (!user && problems.length > FREE_BATCH_CAP) {
+    return res.status(400).json({ error: `Free batch capped at ${FREE_BATCH_CAP} problems. Sign in for up to ${PRO_BATCH_CAP}.` });
+  }
+
+  // Quota check
+  try {
+    const used = await getDailyUsage(user?.id, sessionId);
+    const remaining = DAILY_QUOTA - used;
+    if (remaining < problems.length) {
+      return res.status(429).json({ error: `This batch requires ${problems.length} solves but you have ${Math.max(0, remaining)} remaining today.` });
+    }
+  } catch (err) {
+    console.warn('[batch] quota check failed (non-fatal):', err.message);
+  }
+
+  // SSE setup
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const send = (obj) => {
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+      if (typeof res.flush === 'function') res.flush();
+    }
+  };
+
+  let cancelled = false;
+  req.on('close', () => { cancelled = true; });
+
+  const summary = { verified: 0, checked: 0, discrepancy: 0, not_verified: 0, failed: 0 };
+  const CHUNK = 3;
+
+  for (let i = 0; i < problems.length && !cancelled; i += CHUNK) {
+    const chunk = problems.slice(i, Math.min(i + CHUNK, problems.length));
+    const chunkIndices = chunk.map((_, j) => i + j);
+
+    // Announce all in chunk as started
+    for (const idx of chunkIndices) {
+      if (!cancelled) send({ type: 'problem_started', index: idx });
+    }
+
+    // Process chunk in parallel
+    await Promise.all(chunk.map(async (problem, j) => {
+      const idx = chunkIndices[j];
+      if (cancelled) return;
+      try {
+        const result = await solveOne(problem, mode);
+        const badge = result.artifact?.verification?.badge || 'not_verified';
+        if (badge === 'verified') summary.verified++;
+        else if (badge === 'checked') summary.checked++;
+        else if (badge === 'discrepancy_detected') summary.discrepancy++;
+        else summary.not_verified++;
+
+        send({ type: 'problem_completed', index: idx, artifact: result.artifact });
+
+        // Fire-and-forget DB log per problem
+        insertSolve({ userId: user?.id || null, sessionId, rawInput: problem, mode: result.safeMode, artifact: result.artifact })
+          .catch(err => console.error('[batch] DB log failed:', err.message));
+      } catch (err) {
+        summary.failed++;
+        send({ type: 'problem_failed', index: idx, error: err.message });
+      }
+    }));
+  }
+
+  if (!cancelled) {
+    send({ type: 'batch_completed', summary });
+  }
+  res.end();
 });
 
 if (process.env.RUN_VALIDATION_TESTS === "true") {

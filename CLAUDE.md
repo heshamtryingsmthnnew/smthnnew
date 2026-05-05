@@ -126,6 +126,13 @@ Phase 4 introduces Supabase as the data backbone. Auth, history, and the
 library all live in Postgres. Anonymous solves still work fully — auth is
 optional, surfaces history. The library accumulates regardless of auth state.
 
+### Pivot 9: Batch as workflow tool, not answer dump
+Phase 5 adds batch solve. Design discipline locked: click-through-only-
+for-answers, no bulk export, discrepancy-first navigation. Batch must
+make verification more visible per problem, not less, even though more
+problems are processed at once. This is the line that keeps Ergo aligned
+with trust-first identity rather than drifting toward homework-dump.
+
 ### Pivot 8: Deployment re-sequenced after feature build
 Original plan was to deploy a single-solve product first (old Phase 4),
 then add auth and features. Re-sequenced so that History + Auth + Batch
@@ -1018,8 +1025,27 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     sign out when authenticated.
   - BUILD_VERSION: "v4.0.0-history"
 
-🔲 Phase 5 — Batch Solve
-See BATCH_BRIEF.md.
+✅ Phase 5 — Batch Solve ✅ COMPLETE
+  - "Batch solve" entry in main workspace, opens 3-stage modal:
+    Input (paste or upload) → Review (editable extracted problems) → Processing.
+  - /batch/extract: text or document (PDF/DOCX/image) → JSON array of problems.
+    One Sonnet call regardless of input size. Cap 50 problems.
+  - /batch/solve: SSE stream, 3-parallel processing chunks. Each problem
+    goes through solveOne() (model + normalization + verification + DB log).
+    Per-problem events streamed: started / completed / failed.
+  - Server-authoritative caps: 15 problems/batch free, 50/batch Pro (Pro flag
+    check is permissive in v1, real gate in Phase 7). Per-problem quota
+    accounting against daily 15/day limit.
+  - In-session async: tab close ends the job. beforeunload warning when
+    batch is mid-flight.
+  - Persistent sidebar progress indicator while batch runs.
+  - Result view: summary opens with discrepant problem focused if any exist.
+    Click-through-only-for-answers: final answers ONLY visible when a problem
+    is individually expanded. No bulk export, copy, download, or share.
+  - solveOne() extracted as standalone function — /batch/solve reuses exact
+    same model call, verification, and artifact construction path as /solve.
+  - cancel-on-disconnect: req.on('close') aborts remaining processing.
+  - BUILD_VERSION: "v4.1.0-batch"
 
 🔲 Phase 6 — Deployment
 Vercel (frontend) + Railway/Render (backend), domain, meta/OG tags, env-var API URL.
@@ -1235,7 +1261,33 @@ Frontend (/frontend/src/app/page.tsx)
     calls /verify. Both use NEXT_PUBLIC_API_URL env var.
   - wolfram.js: limit kind (podTargets + inferKindFromQuery), implicit diff →
     differentiation kind. toMathjs: infinity normalization (∞ → Infinity).
-  - BUILD_VERSION: "v4.0.0-history"
+  - BUILD_VERSION: "v4.1.0-batch"
+
+Phase 5 — Batch Solve (new)
+  - backend: solveOne(rawInput, mode) standalone async function — full solve
+    path (prompts, model call, JSON parse, verification, artifact build).
+    Shared by /solve (which keeps its own inline copy) and /batch/solve.
+  - pdf-parse + mammoth installed for PDF/DOCX text extraction.
+  - /batch/extract: accepts text or document (PDF/DOCX/image), returns
+    { problems: string[], truncated: boolean }. Claude splits text into
+    individual problem strings. Image path reuses vision model.
+  - /batch/solve: SSE endpoint. Auth+quota validated at entry. Processes in
+    chunks of 3. Streams problem_started / problem_completed / problem_failed /
+    batch_completed events. Each problem logged individually to solves table.
+    req.on('close') cancels remaining work on disconnect.
+  - Quota: getDailyUsage() counts solves rows in last 24h. Rejects batch if
+    remaining < problems.length. FREE_BATCH_CAP=15, PRO_BATCH_CAP=50.
+  - frontend: BatchProblem, BatchSummary, BatchModalStage types; FREE_BATCH_CAP
+    constant; batchStage, batchProblems, batchSummary and related state.
+  - 3-stage batch modal (input → review → triggers processing + closes).
+  - Sidebar batch indicator: processing (pulsing amber dot + "N/M done") or
+    complete (colored dot + summary counts). Click opens result view.
+  - Batch result view: full-screen overlay left of sidebar. Summary header
+    with color-coded counts. Per-problem cards (badge + user_reason visible;
+    final answer hidden). Click card to expand inline (full artifact rendered
+    including BlockMath). Discrepancy-first: auto-expand first discrepant problem.
+  - beforeunload warning while batchStage === 'processing'.
+  - "Batch solve" text link between Physics tab and mode tabs row.
 
 Phase 4 — History + Library + Auth (new)
   - backend/supabase.js: Supabase service_role client. insertSolve(),
@@ -1301,6 +1353,14 @@ Phase 4 — History + Library + Auth (new)
 - Add password-based auth, OAuth, or social sign-in providers in Phase 4
 - Build a history page route, search, or filter UI in Phase 4
 - Silently change a verification badge during revalidation without surfacing the change
+- Show final answers in the batch summary view (only badges + user_reason)
+- Add bulk export, copy-all, download-all, print-all, or share-all on batch results
+- Persist batch job state to survive tab close (v1)
+- Group batch solves under a separate batch entity (each problem is its own solves row)
+- Allow keyboard shortcuts to advance through answers without per-problem expansion
+- Skip the editable review step in the batch modal
+- Allow batches to exceed server-side caps (15 free / 50 Pro)
+- Process batch problems via a different code path than /solve
 
 ---
 ## 11b. What Claude Code Must Always Do
@@ -1339,6 +1399,19 @@ Never localStorage. Never persists across tab close.
 - No silent badge changes — re-verification is always visibly noted
 - No localStorage for anonymous session IDs
 - The artifact JSON is the source of truth in the solves table
+
+### Batch
+Batch solves are individually-logged solves. There is no separate batch
+entity. The result view is rendered from the constituent solves at view time.
+
+Hard rules for batch UX:
+- Final answers NEVER appear in the summary view
+- Discrepancies are surfaced with focused navigation (open the result view
+  on the discrepant problem)
+- No bulk export, copy, download, share, or print
+- Per-problem engagement is required — no shortcuts to "see all answers"
+- Server-authoritative quota: each problem in a batch counts as 1 solve
+- Batch jobs do NOT survive tab close (in v1)
 
 ---
 ## 13. One-Paragraph Product Summary
