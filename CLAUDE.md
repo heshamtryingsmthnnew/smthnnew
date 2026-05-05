@@ -983,16 +983,23 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     bg-zinc-950/95 — textarea faintly visible underneath.
   - BUILD_VERSION: "v3.9.3-polish-08"
 
-🔲 Phase 4 — Deployment
+🔲 Phase 4 — History + Library + Auth
+See HISTORY_BRIEF.md.
+
+🔲 Phase 5 — Batch Solve
+See BATCH_BRIEF.md.
+
+🔲 Phase 6 — Deployment
 Vercel (frontend) + Railway/Render (backend), domain, meta/OG tags, env-var API URL.
+Production Supabase Auth redirect URL added during this phase.
 
-🔲 Phase 5 — Auth & Monetization
-Accounts, free tier limiting, Pro gating, Stripe.
+🔲 Phase 7 — Monetization (Stripe + Pro gating)
+Deferred. Free tier only at launch. Re-evaluate after 30 days of usage data.
 
-🔲 Phase 6 — Interactive Mode (Full)
+🔲 Phase 8 — Interactive Mode (Full)
 Conversational follow-up on solved problems, concept exploration, related examples.
 
-🔲 Phase 7 — Analytics
+🔲 Phase 9 — Analytics
 Verification tier tracking, failure reasons, suggestion usage, conversion funnel,
 cost-per-solve.
 ```
