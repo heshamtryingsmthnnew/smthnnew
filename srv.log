@@ -1,3 +1,178 @@
-[dotenv@17.2.3] injecting env (2) from .env -- tip: 🔑 add access controls to secrets: https://dotenvx.com/ops
+[dotenv@17.2.3] injecting env (5) from .env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
 Server running on http://localhost:5000
-Build version: v2.0.0-claude-migration
+Build version: v4.1.0-batch
+[auth/merge-session] error: permission denied for table solves
+[history/list] error: permission denied for table solves
+
+=== CLAUDE RAW RESPONSE ===
+```json
+{
+  "final_answer_latex": "\\cos(x)",
+  "normalized_expression": "cos(x)",
+  "wolfram_query": "d/dx[sin(x)]",
+  "graphable": true,
+  "graph_expression": "y=cos(x)",
+  "overview": "Differentiate sin(x) using the standard derivative rule for sine",
+  "sections": [
+    {
+      "title": "Apply the derivative of sine",
+      "summary_latex": "\\frac{d}{dx}[\\sin(x)] = \\cos(x)",
+      "explanation": "The derivative of sin(x) with respect to x is computed directly. Since the argument is simply x (not a composite function), no chain rule is needed — the result follows immediately from the standard differentiation rule.",
+      "concept": "The derivative of sin(x) is cos(x) by the standard trigonometric derivative rule. This applies directly because the argument is the independent variable x itself, requiring no further composition or substitution."
+    }
+  ]
+}
+```
+=== END RAW RESPONSE ===
+
+[PARSE] wolfram_query: d/dx[sin(x)]
+[PARSE] JSON parsing succeeded. normalized_expression: cos(x)
+[history/list] error: permission denied for table solves
+[auth/merge-session] error: permission denied for table solves
+[history/list] error: permission denied for table solves
+[dotenv@17.2.3] injecting env (5) from .env -- tip: ⚙️  enable debug logging with { debug: true }
+Server running on http://localhost:5000
+Build version: v4.1.0-batch
+[history/list] error: permission denied for table solves
+[auth/merge-session] error: permission denied for table solves
+[history/list] error: permission denied for table solves
+[history/list] error: permission denied for table solves
+
+=== CLAUDE RAW RESPONSE ===
+```json
+{
+  "final_answer_latex": "5e^x \\sin(x^2) \\cdot (2x \\cos(x^2) + \\sin(x^2))",
+  "normalized_expression": "5*e^x*sin(x^2)*(2*x*cos(x^2) + sin(x^2))",
+  "wolfram_query": "d/dx[sin(x^2)*5*e^x]",
+  "graphable": false,
+  "graph_expression": "",
+  "overview": "Differentiate sin(x²)·5eˣ using the product rule combined with the chain rule for the composite sine term.",
+  "sections": [
+    {
+      "title": "Apply the product rule to the product of two functions",
+      "summary_latex": "\\frac{d}{dx}\\left[5e^x \\sin(x^2)\\right] = 5e^x \\cdot \\frac{d}{dx}\\left[\\sin(x^2)\\right] + \\sin(x^2) \\cdot \\frac{d}{dx}\\left[5e^x\\right]",
+      "explanation": "The expression is a product of two functions: f(x) = 5eˣ and g(x) = sin(x²). The product rule states that the derivative of a product is the first function times the derivative of the second plus the second function times the derivative of the first. We apply this to separate the differentiation task into two manageable parts.",
+      "concept": "Product rule: (fg)' = f'g + fg'. Here f = 5eˣ and g = sin(x²), so the derivative becomes 5eˣ·(d/dx[sin(x²)]) + sin(x²)·(d/dx[5eˣ]). Each term now requires its own differentiation."
+    },
+    {
+      "title": "Differentiate the exponential term",
+      "summary_latex": "\\frac{d}{dx}\\left[5e^x\\right] = 5e^x",
+      "explanation": "The derivative of eˣ is eˣ, and the constant factor 5 remains unchanged. This is a direct application of the standard exponential derivative rule.",
+      "concept": "The derivative d/dx[eˣ] = eˣ applies directly. Constant multiples pass through differentiation unchanged."
+    },
+    {
+      "title": "Differentiate the composite sine function using the chain rule",
+      "summary_latex": "\\frac{d}{dx}\\left[\\sin(x^2)\\right] = \\cos(x^2) \\cdot 2x",
+      "explanation": "The function sin(x²) is a composition of the outer function sin(u) and the inner function u = x². The chain rule requires us to differentiate the outer function with respect to the inner, then multiply by the derivative of the inner function. The outer derivative is cos(u), and the inner derivative is 2x.",
+      "concept": "Chain rule: (f ∘ g)' = f'(g(x))·g'(x). Here f(u) = sin(u) with f'(u) = cos(u), and g(x) = x² with g'(x) = 2x. Substituting u = x² gives cos(x²)·2x."
+    },
+    {
+      "title": "Substitute the derivatives back into the product rule expression",
+      "summary_latex": "\\frac{d}{dx}\\left[5e^x \\sin(x^2)\\right] = 5e^x \\cdot 2x\\cos(x^2) + \\sin(x^2) \\cdot 5e^x",
+      "explanation": "We now replace the derivative placeholders in the product rule formula with the computed derivatives: d/dx[sin(x²)] = 2x cos(x²) and d/dx[5eˣ] = 5eˣ. This gives us the full expanded form of the derivative.",
+      "concept": "Direct substitution of computed derivatives into the product rule structure. Each term is now fully evaluated."
+    },
+    {
+      "title": "Factor out the common term 5eˣ",
+      "summary_latex": "5e^x \\left(2x\\cos(x^2) + \\sin(x^2)\\right)",
+      "explanation": "Both terms in the sum share the factor 5eˣ. Factoring this out simplifies the expression and reveals the structure more clearly. The remaining terms 2x cos(x²) and sin(x²) are grouped in parentheses.",
+      "concept": "Distributive property in reverse: ab + ac = a(b + c). Here a = 5eˣ, b = 2x cos(x²), and c = sin(x²), yielding the factored form."
+=== END RAW RESPONSE ===
+
+[PARSE] wolfram_query: null
+[PARSE] JSON parsed but missing required fields — fell back to legacy parsing.
+
+=== CLAUDE RAW RESPONSE ===
+```json
+{
+  "final_answer_latex": "\\frac{d}{dx}\\left[5e^x \\sin(x^2)\\right] = 5e^x \\sin(x^2) + 10xe^x \\cos(x^2)",
+  "normalized_expression": "d/dx[5*e^x*sin(x^2)] = 5*e^x*sin(x^2) + 10*x*e^x*cos(x^2)",
+  "wolfram_query": "d/dx[5*e^x*sin(x^2)]",
+  "graphable": false,
+  "graph_expression": "",
+  "overview": "Differentiate 5e^x·sin(x²) using the product rule combined with the chain rule for the composite sine term.",
+  "sections": [
+    {
+      "title": "Apply the product rule to the product of 5e^x and sin(x²)",
+      "summary_latex": "\\frac{d}{dx}\\left[5e^x \\sin(x^2)\\right] = \\frac{d}{dx}[5e^x] \\cdot \\sin(x^2) + 5e^x \\cdot \\frac{d}{dx}[\\sin(x^2)]",
+      "explanation": "The expression is a product of two functions: f(x) = 5e^x and g(x) = sin(x²). The product rule states that the derivative of a product is the derivative of the first times the second plus the first times the derivative of the second. We apply this directly, leaving the derivatives of each factor to be computed in subsequent steps.",
+      "concept": "Product rule: (fg)' = f'g + fg'. Here f = 5e^x and g = sin(x²), so the derivative becomes f'·sin(x²) + 5e^x·g'. This decomposition is necessary because neither factor is constant, and the product rule is the only differentiation rule that handles products of variable functions."
+    },
+    {
+      "title": "Differentiate 5e^x with respect to x",
+      "summary_latex": "\\frac{d}{dx}[5e^x] = 5e^x",
+      "explanation": "The derivative of e^x is e^x, and the constant factor 5 remains unchanged under differentiation. This is a direct application of the exponential derivative rule combined with the constant multiple rule.",
+      "concept": "The derivative of e^x is e^x, and constant multiples pass through differentiation: d/dx[cf(x)] = c·f'(x). Here c = 5 and f(x) = e^x, yielding 5e^x."
+    },
+    {
+      "title": "Differentiate sin(x²) using the chain rule",
+      "summary_latex": "\\frac{d}{dx}[\\sin(x^2)] = \\cos(x^2) \\cdot \\frac{d}{dx}[x^2] = \\cos(x^2) \\cdot 2x = 2x\\cos(x^2)",
+      "explanation": "The function sin(x²) is a composition of the outer function sin(u) and the inner function u = x². The chain rule requires us to differentiate the outer function with respect to its argument, yielding cos(x²), then multiply by the derivative of the inner function x², which is 2x. This gives the final result 2x·cos(x²).",
+      "concept": "Chain rule: d/dx[f(g(x))] = f'(g(x))·g'(x). Here f(u) = sin(u) with f'(u) = cos(u), and g(x) = x² with g'(x) = 2x. Substituting u = x² into f'(u) gives cos(x²), and multiplying by g'(x) = 2x yields 2x·cos(x²)."
+    },
+    {
+      "title": "Combine terms using the product rule result",
+      "summary_latex": "\\frac{d}{dx}\\left[5e^x \\sin(x^2)\\right] = 5e^x \\cdot \\sin(x^2) + 5e^x \\cdot 2x\\cos(x^2) = 5e^x \\sin(x^2) + 10xe^x \\cos(x^2)",
+      "explanation": "Substituting the computed derivatives into the product rule formula from the first step: the derivative of 5e^x is 5e^x, and the derivative of sin(x²) is 2x·cos(x²). Multiplying the second term by 5e^x and simplifying the constant factor 5·2 = 10 yields the final expression.",
+      "concept": "Substitution of computed derivatives into the product rule framework. The first term is (5
+=== END RAW RESPONSE ===
+
+[PARSE] wolfram_query: null
+[PARSE] JSON parsed but missing required fields — fell back to legacy parsing.
+[history/list] error: permission denied for table solves
+[auth/merge-session] error: permission denied for table solves
+[history/list] error: permission denied for table solves
+
+=== CLAUDE RAW RESPONSE ===
+```json
+{
+  "final_answer_latex": "e^x \\sin(x^3) \\cdot (3x^2 \\cos(x^3) + \\sin(x^3))",
+  "normalized_expression": "e^x * sin(x^3) * (3x^2 * cos(x^3) + sin(x^3))",
+  "wolfram_query": "d/dx[sin(x^3) * e^x]",
+  "graphable": false,
+  "graph_expression": "",
+  "overview": "Differentiate sin(x³)·eˣ using the product rule combined with the chain rule",
+  "sections": [
+    {
+      "title": "Apply the product rule to the product of two functions",
+      "summary_latex": "\\frac{d}{dx}[\\sin(x^3) \\cdot e^x] = \\frac{d}{dx}[\\sin(x^3)] \\cdot e^x + \\sin(x^3) \\cdot \\frac{d}{dx}[e^x]",
+      "explanation": "The expression is a product of two functions: sin(x³) and eˣ. The product rule states that the derivative of a product is the derivative of the first times the second plus the first times the derivative of the second. This decomposition allows us to handle each factor separately.",
+      "concept": "Product rule: for u(x)·v(x), the derivative is u'v + uv'. Here u = sin(x³) and v = eˣ, so d/dx[uv] = (d/dx[sin(x³)])·eˣ + sin(x³)·(d/dx[eˣ]). The result follows by applying the rule to these specific components."
+    },
+    {
+      "title": "Differentiate sin(x³) using the chain rule",
+      "summary_latex": "\\frac{d}{dx}[\\sin(x^3)] = \\cos(x^3) \\cdot 3x^2",
+      "explanation": "The function sin(x³) is a composition of sin(u) with u = x³. The chain rule requires multiplying the derivative of the outer function (cos(u)) by the derivative of the inner function (3x²). This yields cos(x³)·3x².",
+      "concept": "Chain rule: for f(g(x)), the derivative is f'(g(x))·g'(x). Here f(u) = sin(u) with f'(u) = cos(u), and g(x) = x³ with g'(x) = 3x². Substituting gives cos(x³)·3x², which is the derivative of the composite function."
+    },
+    {
+      "title": "Differentiate eˣ",
+      "summary_latex": "\\frac{d}{dx}[e^x] = e^x",
+      "explanation": "The exponential function eˣ is its own derivative. This is a standard result that applies directly here.",
+      "concept": "The derivative of eˣ is eˣ — a fundamental property of the natural exponential function."
+    },
+    {
+      "title": "Substitute derivatives into the product rule expression",
+      "summary_latex": "\\frac{d}{dx}[\\sin(x^3) \\cdot e^x] = (\\cos(x^3) \\cdot 3x^2) \\cdot e^x + \\sin(x^3) \\cdot e^x",
+      "explanation": "We substitute the computed derivatives from the previous steps into the product rule formula. The first term becomes 3x²cos(x³)·eˣ and the second term is sin(x³)·eˣ. This gives the full expanded derivative before simplification.",
+      "concept": "Direct substitution of the results u' = 3x²cos(x³) and v' = eˣ into the product rule formula u'v + uv' yields the complete derivative expression."
+    },
+    {
+      "title": "Factor out the common term eˣ",
+      "summary_latex": "e^x \\sin(x^3) \\cdot (3x^2 \\cos(x^3) + \\sin(x^3))",
+      "explanation": "Both terms contain the factor eˣ, which can be factored out. This produces a more compact form: eˣ multiplied by the sum of the remaining factors. The expression is now fully simplified.",
+      "concept": "Factoring extracts the common multiplicative factor eˣ from both terms, yielding eˣ·[3x²cos(x³) + sin(x³)]. This is algebraic simplification by the distributive property."
+    }
+  ]
+}
+```
+=== END RAW RESPONSE ===
+
+[PARSE] wolfram_query: d/dx[sin(x^3) * e^x]
+[PARSE] JSON parsing succeeded. normalized_expression: e^x * sin(x^3) * (3x^2 * cos(x^3) + sin(x^3))
+[/verify] wolfram_query: d/dx[sin(x^3) * e^x]
+[/verify] kind: differentiation
+[Wolfram] raw expression: d/dx[sin(x^3) * e^x]
+[Wolfram] kind: differentiation
+[Wolfram] fetch error: fetch failed
+[/verify] wolfram result: null

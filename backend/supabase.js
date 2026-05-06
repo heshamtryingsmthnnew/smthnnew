@@ -31,10 +31,17 @@ async function updateSolveVerification({ solveId, artifact }) {
   }).eq('id', solveId);
 }
 
-async function getUserFromToken(token) {
-  const { data, error } = await supabase.auth.getUser(token);
-  if (error || !data?.user) return null;
-  return data.user;
+// Decode JWT payload locally — avoids a network round-trip to Supabase auth on every request.
+// The 'sub' claim is the user ID; Supabase always sets it.
+function getUserFromToken(token) {
+  try {
+    const b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+    if (!payload.sub) return null;
+    return { id: payload.sub, email: payload.email || null };
+  } catch {
+    return null;
+  }
 }
 
 module.exports = { supabase, insertSolve, updateSolveVerification, getUserFromToken };

@@ -367,6 +367,7 @@ export default function Home() {
   const [authEmail, setAuthEmail] = useState('');
   const [authSent, setAuthSent] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [revalidationNote, setRevalidationNote] = useState<{ date: string; version: string } | null>(null);
 
   // Batch solve state
@@ -581,11 +582,21 @@ export default function Home() {
     e.preventDefault();
     if (!authEmail.trim()) return;
     setAuthLoading(true);
+    setAuthError(null);
     try {
-      await supabase.auth.signInWithOtp({ email: authEmail.trim() });
-      setAuthSent(true);
-    } catch (e) {
-      console.warn('[auth] signInWithOtp failed', e);
+      const { error } = await supabase.auth.signInWithOtp({
+        email: authEmail.trim(),
+        options: { emailRedirectTo: window.location.origin },
+      });
+      if (error) {
+        setAuthError(error.message);
+      } else {
+        setAuthSent(true);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setAuthError(`Network error: ${msg}`);
+      console.error('[auth] signInWithOtp threw:', err);
     } finally {
       setAuthLoading(false);
     }
@@ -792,6 +803,11 @@ export default function Home() {
       const solveArtifact = res.data.artifact || null;
       artifactRef.current = solveArtifact;
       setArtifact(solveArtifact);
+
+      // Refresh history list so new solve appears immediately in sidebar
+      if (sessionData.session?.access_token) {
+        fetchHistory(sessionData.session.access_token);
+      }
 
       if (shouldAutoFire && solveArtifact) {
         setHasSeenAdvancedVerification(true);
@@ -1246,7 +1262,7 @@ export default function Home() {
                 <p className="text-[14px] leading-6 text-zinc-400">Sign in to save and track your sessions</p>
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); setShowAuthModal(true); setAuthSent(false); setAuthEmail(''); }}
+                  onClick={(e) => { e.stopPropagation(); setShowAuthModal(true); setAuthSent(false); setAuthEmail(''); setAuthError(null); }}
                   className="mt-2 w-full rounded-md bg-zinc-800 px-3 py-1.5 text-[13px] text-zinc-100 transition-colors hover:bg-zinc-700"
                 >
                   Sign in
@@ -1316,7 +1332,7 @@ export default function Home() {
           ) : (
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); setShowAuthModal(true); setAuthSent(false); setAuthEmail(''); }}
+              onClick={(e) => { e.stopPropagation(); setShowAuthModal(true); setAuthSent(false); setAuthEmail(''); setAuthError(null); }}
               className={`flex w-full items-center rounded-md py-2 text-[14px] text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300 ${sidebarOpen ? 'gap-3 px-3' : 'justify-center px-0'}`}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -2348,6 +2364,12 @@ export default function Home() {
                     {authLoading ? 'Sending…' : 'Send magic link'}
                   </button>
                 </form>
+              )}
+
+              {authError && (
+                <p className="mt-3 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-[12px] text-red-400">
+                  {authError}
+                </p>
               )}
 
               <button

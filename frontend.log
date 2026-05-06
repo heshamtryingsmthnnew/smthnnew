@@ -1,0 +1,50 @@
+
+> frontend@0.1.0 dev
+> next dev
+
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+ ⚠ Warning: Next.js inferred your workspace root, but it may not be correct.
+ We detected multiple lockfiles and selected the directory of C:\Users\hesha\Documents\my-ai-app\package-lock.json as the root directory.
+ To silence this warning, set `turbopack.root` in your Next.js config, or consider removing one of the lockfiles if it's not needed.
+   See https://nextjs.org/docs/app/api-reference/config/next-config-js/turbopack#root-directory for more information.
+ Detected additional lockfiles: 
+   * C:\Users\hesha\Documents\my-ai-app\frontend\package-lock.json
+
+   ▲ Next.js 16.0.3 (Turbopack)
+   - Local:         http://localhost:3000
+   - Network:       http://10.202.0.2:3000
+   - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 14.5s
+ ○ Compiling / ...
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+ GET / 200 in 8.2s (compile: 7.8s, render: 359ms)
+ GET / 200 in 35ms (compile: 5ms, render: 29ms)
+ GET / 200 in 77ms (compile: 13ms, render: 63ms)
+ GET / 200 in 65ms (compile: 7ms, render: 58ms)
+ ✓ Compiled in 32ms
+ ✓ Compiled in 540ms
+ ✓ Compiled in 483ms
+ ✓ Compiled in 420ms
+ ✓ Compiled in 465ms
+ ✓ Compiled in 381ms
+ GET / 200 in 294ms (compile: 85ms, render: 209ms)
+   Reload env: .env.local
+ ✓ Compiled in 18ms
+ GET / 200 in 84ms (compile: 39ms, render: 45ms)
+ GET / 200 in 227ms (compile: 8ms, render: 219ms)
+ ✓ Compiled in 552ms
+   Reload env: .env.local
+ ✓ Compiled in 48ms
+ GET / 200 in 143ms (compile: 80ms, render: 63ms)
+ GET / 200 in 246ms (compile: 8ms, render: 237ms)
+   Reload env: .env.local
+ ✓ Compiled in 56ms
+ GET / 200 in 168ms (compile: 85ms, render: 83ms)
+ GET / 200 in 170ms (compile: 135ms, render: 34ms)
+ ✓ Compiled in 900ms
+ ✓ Compiled in 712ms
+ GET / 200 in 402ms (compile: 134ms, render: 267ms)
+ GET / 200 in 169ms (compile: 18ms, render: 151ms)
+ GET / 200 in 38ms (compile: 7ms, render: 32ms)

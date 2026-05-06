@@ -2081,7 +2081,7 @@ Mode: physics`;
       try {
         const authHeader = req.headers['authorization'] || '';
         const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-        const user = token ? await getUserFromToken(token) : null;
+        const user = token ? getUserFromToken(token) : null;
         const sessionId = req.headers['x-session-id'] || null;
         await insertSolve({
           userId: user?.id || null,
@@ -2310,7 +2310,7 @@ app.get('/history/list', async (req, res) => {
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
 
-  const user = await getUserFromToken(token);
+  const user = getUserFromToken(token);
   if (!user) return res.status(401).json({ error: 'Invalid token' });
 
   try {
@@ -2345,7 +2345,7 @@ app.get('/history/get/:id', async (req, res) => {
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
 
-  const user = await getUserFromToken(token);
+  const user = getUserFromToken(token);
   if (!user) return res.status(401).json({ error: 'Invalid token' });
 
   const { id } = req.params;
@@ -2444,7 +2444,7 @@ app.post('/auth/merge-session', async (req, res) => {
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
 
-  const user = await getUserFromToken(token);
+  const user = getUserFromToken(token);
   if (!user) return res.status(401).json({ error: 'Invalid token' });
 
   const { session_id } = req.body;
@@ -2570,7 +2570,7 @@ app.post('/batch/solve', async (req, res) => {
 
   const authHeader = req.headers['authorization'] || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  const user = token ? await getUserFromToken(token) : null;
+  const user = token ? getUserFromToken(token) : null;
   const sessionId = req.headers['x-session-id'] || null;
 
   // Server-side cap
