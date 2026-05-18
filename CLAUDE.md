@@ -1114,6 +1114,23 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
   - cancel-on-disconnect: req.on('close') aborts remaining processing.
   - BUILD_VERSION: "v4.1.0-batch"
 
+✅ Pre-5a — Event Log Infrastructure ✅ COMPLETE
+  - Supabase migration: events table (id, created_at, kind, severity, correlation_id,
+    user_id, session_id, build_version, payload jsonb, message) with indexes on
+    (kind, created_at), (correlation_id), (user_id, created_at), (severity, created_at).
+    RLS enabled, service_role only.
+  - backend/eventKinds.js: locked vocabulary of 17 kinds (16 structured + debug.observation).
+    Runtime-enforced via assertValidKind() — unknown kinds throw.
+  - backend/eventLog.js: logEvent() fire-and-forget, newCorrelationId() utility.
+    Failures fall back to backend/logs/events-fallback.jsonl (sync append).
+  - backend/scripts/read-events.js: query utility with kind/severity/correlation_id/
+    time-range filters and aggregations.
+  - LOGGING_OBSERVATIONS.md created at repo root — tracks every debug.observation
+    call site for pre-Phase-6 cleanup.
+  - backend/.gitignore: logs/ and *.jsonl excluded.
+  - Imports wired in backend/index.js but no instrumentation yet (deferred to Commit 2).
+  - BUILD_VERSION: "v4.2.0-events"
+
 🔲 Phase 5a — Session Model + Sidebar Restructure + Quick Wins
 
   JPEG Extraction Bug — diagnose before any code change:
@@ -1403,6 +1420,11 @@ Backend (/backend)
   - scripts/read-cas-log.js: reads cas-events.jsonl, prints verdict/kind
     breakdowns + last N events. Node stdlib only.
   - BUILD_VERSION: "v3.6.0-cas-compare-rebuild"
+  - eventLog.js: logEvent() fire-and-forget event writer; newCorrelationId() generator.
+  - eventKinds.js: locked vocabulary (17 kinds), runtime-enforced.
+  - scripts/read-events.js: query utility for events table.
+  - logEvent + newCorrelationId imported in index.js — no call sites yet (Commit 2).
+  - BUILD_VERSION: "v4.2.0-events"
 
 Frontend (/frontend/src/app/page.tsx)
   - Next.js + Tailwind + KaTeX + Framer Motion
@@ -1643,6 +1665,14 @@ Phase 4 — History + Library + Auth (new)
   queries on the session_id column of the solves table in v1
 - Hard-code the 4-hour session cluster threshold — it must be a named
   constant (SESSION_CLUSTER_HOURS) configurable in code
+- Log raw user questions in the events table payload field — payload carries derived
+  structured data only; raw input lives in solves table only, joinable via correlation_id
+- Add new event kinds without registering them in backend/eventKinds.js
+- Soften the eventKinds.js runtime throw to a console.warn
+- Ship debug.observation call sites to Phase 6 launch — every call site must be
+  resolved (promoted/deleted/kept-with-justification) and tracked in LOGGING_OBSERVATIONS.md
+- Create a separate Supabase project for events — same project as solves
+- Make events table user-readable via RLS — service_role only, internal observability
 
 ---
 ## 11b. What Claude Code Must Always Do
@@ -1651,6 +1681,10 @@ Phase 4 — History + Library + Auth (new)
   mark the phase ✅ complete, add a brief bullet list of what was actually
   implemented, and update Section 10 (Current Code State) to reflect the
   new state. Do this before closing the session.
+- When adding a debug.observation call site, also add a corresponding entry to
+  LOGGING_OBSERVATIONS.md in the same commit. No exceptions.
+- When adding a new structured event kind, register it in backend/eventKinds.js
+  AND document it in CLAUDE.md Section 17 in the same commit.
 ---
 ## 12. Library & History (Locked)
 
@@ -1870,3 +1904,60 @@ Content-Disposition and MIME type.
 - Exported files always include verification state — never strip
   badge or step status from any export format
 - Anki cards: front/back only, no step diagnostics in card content
+
+---
+## 17. Event Logging
+
+Structured event log for failure modes and observability. Backbone for Phase 8 analytics.
+
+### Storage
+Single `events` table in the same Supabase project as `solves`. Schema:
+id, created_at, kind, severity, correlation_id, user_id, session_id, build_version, payload (jsonb), message.
+RLS enabled, service_role only — no user-facing access to events.
+
+### Module
+`backend/eventLog.js` exports `logEvent()` and `newCorrelationId()`.
+Fire-and-forget pattern. Failures fall back to `backend/logs/events-fallback.jsonl` (sync append).
+Never blocks the caller. Throws only on vocabulary violation.
+
+### Vocabulary (locked)
+Defined in `backend/eventKinds.js`. Runtime-enforced — unknown kinds throw.
+Current kinds:
+- Solve: solve.success, solve.model_parse_fail, solve.verify_fail, solve.exception
+- Verify: verify.cas_timeout, verify.cas_skipped, verify.compare_unavailable, audit.parse_fail
+- Extract: extract.no_problems_found, extract.unsupported_mimetype, extract.exception
+- Batch: batch.problem_failed, batch.extract_failed
+- Auth/history: auth.merge_failed, history.revalidation_failed
+- Frontend: frontend.katex_render_fail, frontend.desmos_init_fail, frontend.sse_stream_break
+- Debug: debug.observation (testing-phase only, must be removed before Phase 6)
+
+### Adding or removing kinds
+- Add: register in `eventKinds.js`, document here, then instrument call sites.
+- Remove: confirm zero call sites remain, then unregister.
+
+### Correlation IDs
+Generated at the start of every `/solve` with `newCorrelationId()`.
+Returned in `/solve` response as `correlation_id`. Frontend passes back to `/verify`
+and includes in frontend-originated events (when frontend logging ships).
+One correlation_id = one user action traced end to end.
+
+### debug.observation lifecycle
+Intentionally outside the structured vocabulary. Every call site must be tracked in
+`LOGGING_OBSERVATIONS.md` at repo root. Every observation must be resolved before
+Phase 6 launch — promoted to a structured kind, kept as debug with justification,
+or deleted. Shipping debug.observation to production is a hard rule violation.
+
+### Payload discipline
+The `payload` field carries derived structured data only:
+problem_kind, mode, badge, latency_ms, model_used, error_message_summary, etc.
+Raw user questions NEVER go in payload — they live in the `solves` table only,
+joinable via correlation_id → solve_id.
+
+### Sampling (deferred to post-Phase-6)
+All events log at 100% during testing and early launch. Sampling thresholds for
+high-volume events (verify.cas_skipped, solve.success) tuned post-launch with
+real volume data. Errors never sampled.
+
+### Query
+`node backend/scripts/read-events.js [--kind=X] [--severity=Y] [--correlation=Z] [--since=ISO] [--limit=N]`
+Prints recent events with aggregations by kind and severity.

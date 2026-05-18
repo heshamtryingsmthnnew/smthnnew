@@ -40,5 +40,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# CAS observability logs
+# Observability logs
 /logs/
+*.jsonl

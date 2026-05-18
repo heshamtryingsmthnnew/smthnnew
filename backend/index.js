@@ -9,6 +9,7 @@ const { queryWolfram, compareWithWolfram, inferKindFromQuery } = require('./wolf
 const { logCasEvent } = require('./casLogger');
 const { runPhysicsAudit } = require('./physicsAudit');
 const { insertSolve, updateSolveVerification, getUserFromToken, supabase } = require('./supabase');
+const { logEvent, newCorrelationId } = require('./eventLog');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -19,7 +20,7 @@ const upload = multer({
   },
 });
 
-const BUILD_VERSION = "v4.1.0-batch";
+const BUILD_VERSION = "v4.2.0-events";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
