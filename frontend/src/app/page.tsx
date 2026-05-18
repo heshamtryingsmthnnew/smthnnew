@@ -302,6 +302,7 @@ export default function Home() {
   const [ghostQuestion, setGhostQuestion] = useState('');
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [loading, setLoading] = useState(false);
+  const [currentCorrelationId, setCurrentCorrelationId] = useState<string | null>(null);
   const [openExplainIndex, setOpenExplainIndex] = useState<number | null>(null);
   const [showProofDetails, setShowProofDetails] = useState(false);
   const [exampleIndex, setExampleIndex] = useState(0);
@@ -419,6 +420,7 @@ export default function Home() {
     advancedResultReady.current = false;
     setShowStickyBar(false);
     setRevalidationNote(null);
+    setCurrentCorrelationId(null);
   }, []);
 
   useEffect(() => {
@@ -802,6 +804,7 @@ export default function Home() {
 
       const solveArtifact = res.data.artifact || null;
       artifactRef.current = solveArtifact;
+      setCurrentCorrelationId(res.data.correlation_id || null);
       setArtifact(solveArtifact);
 
       // Refresh history list so new solve appears immediately in sidebar
@@ -819,6 +822,7 @@ export default function Home() {
           final_answer_latex: solveArtifact.solution?.final_answer_latex || '',
           question: solveArtifact.original_input,
           structured_solution: solveArtifact.solution,
+          correlation_id: res.data.correlation_id || null,
         };
 
         axios.post(`${API_URL}/verify`, verifyPayload).then((verifyRes) => {
@@ -953,6 +957,7 @@ export default function Home() {
         final_answer_latex: artifact.solution?.final_answer_latex || '',
         question: artifact.original_input,
         structured_solution: artifact.solution,
+        correlation_id: currentCorrelationId,
       });
       const verifyData = res.data;
       const mergedArtifact: Artifact = {

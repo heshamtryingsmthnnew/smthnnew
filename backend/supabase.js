@@ -9,18 +9,25 @@ async function insertSolve({ userId, sessionId, rawInput, mode, artifact }) {
   const ver = artifact?.verification || {};
   const np = artifact?.normalized_payload || {};
 
-  await supabase.from('solves').insert({
-    user_id: userId || null,
-    session_id: userId ? null : (sessionId || null),
-    raw_input: rawInput,
-    mode,
-    artifact,
-    build_version: artifact?.build_version || '',
-    badge: ver.badge || 'not_verified',
-    reason_code: ver.reason_code || null,
-    problem_kind: np.type || null,
-    original_badge: ver.badge || 'not_verified',
-  });
+  const { data, error } = await supabase
+    .from('solves')
+    .insert({
+      user_id: userId || null,
+      session_id: userId ? null : (sessionId || null),
+      raw_input: rawInput,
+      mode,
+      artifact,
+      build_version: artifact?.build_version || '',
+      badge: ver.badge || 'not_verified',
+      reason_code: ver.reason_code || null,
+      problem_kind: np.type || null,
+      original_badge: ver.badge || 'not_verified',
+    })
+    .select('id, session_id, user_id, created_at')
+    .single();
+
+  if (error) throw error;
+  return data;
 }
 
 async function updateSolveVerification({ solveId, artifact }) {

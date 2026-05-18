@@ -1131,6 +1131,22 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
   - Imports wired in backend/index.js but no instrumentation yet (deferred to Commit 2).
   - BUILD_VERSION: "v4.2.0-events"
 
+✅ Pre-5a — Backend Instrumentation ✅ COMPLETE
+  - logEvent wired into all known failure points across /solve, /verify, /extract-problem,
+    /batch/solve, /batch/extract, /auth/merge-session, /history/get/:id revalidation.
+  - 16 structured event kinds instrumented. debug.observation reserved for ad-hoc use.
+  - newCorrelationId() generated at /solve entry. Threaded into /verify via request body.
+    Frontend captures correlation_id from /solve response and passes back on /verify calls.
+  - /solve response shape extended with { correlation_id, solve_id, session_id }.
+    Foundation for Phase 5a optimistic insert (option C). Older clients ignore new fields.
+  - insertSolve() now returns inserted row { id, session_id, user_id, created_at }.
+    /solve awaits insertSolve before responding (~50–100ms added latency). Failure path
+    logs solve.exception and degrades to null solve_id/session_id in response.
+  - solveOne() (used by /batch/solve) deliberately NOT modified — batch events fire at
+    batch handler layer via batch.problem_failed.
+  - No solve correctness, prompt, verification, or UI behavior changed.
+  - BUILD_VERSION: "v4.2.1-instrumented"
+
 🔲 Phase 5a — Session Model + Sidebar Restructure + Quick Wins
 
   JPEG Extraction Bug — diagnose before any code change:
@@ -1425,6 +1441,15 @@ Backend (/backend)
   - scripts/read-events.js: query utility for events table.
   - logEvent + newCorrelationId imported in index.js — no call sites yet (Commit 2).
   - BUILD_VERSION: "v4.2.0-events"
+  - All /solve failure points (model parse, verify throw, top-level catch) call logEvent
+    with correlation_id from newCorrelationId(). insertSolve is awaited before res.json.
+    Response now includes correlation_id, solve_id, session_id.
+  - /verify reads correlation_id from request body. Instruments verify.cas_timeout,
+    verify.cas_skipped, verify.compare_unavailable, audit.parse_fail.
+  - /extract-problem, /batch/solve, /batch/extract, /auth/merge-session,
+    /history/get/:id revalidation all instrumented with their respective event kinds.
+  - solveOne unchanged. Batch instrumentation lives at handler layer.
+  - BUILD_VERSION: "v4.2.1-instrumented"
 
 Frontend (/frontend/src/app/page.tsx)
   - Next.js + Tailwind + KaTeX + Framer Motion
@@ -1528,6 +1553,9 @@ Frontend (/frontend/src/app/page.tsx)
   - wolfram.js: limit kind (podTargets + inferKindFromQuery), implicit diff →
     differentiation kind. toMathjs: infinity normalization (∞ → Infinity).
   - BUILD_VERSION: "v4.1.0-batch"
+  - currentCorrelationId state captures correlation_id returned by /solve.
+    Threaded into auto-fire /verify call and manual runAdvancedVerification call.
+    Cleared by handleReset. Future-use for frontend event logging.
   - PENDING Phase 5a change: sticky answer bar currently fixed at top-0
     (Polish Brief 03b). Must shift to top-9 when session tab is implemented
     to sit below the session tab strip. Solution view pt-20 required.
@@ -1665,6 +1693,14 @@ Phase 4 — History + Library + Auth (new)
   queries on the session_id column of the solves table in v1
 - Hard-code the 4-hour session cluster threshold — it must be a named
   constant (SESSION_CLUSTER_HOURS) configurable in code
+- Remove correlation_id, solve_id, or session_id from /solve response shape — they are
+  load-bearing for Phase 5a optimistic insert (option C) and frontend event correlation
+- Revert insertSolve to fire-and-forget — it is awaited before /solve response by design;
+  the latency cost is paid to enable optimistic insert reconciliation
+- Modify solveOne() to add correlation_id without explicit founder approval — batch
+  instrumentation is intentionally handler-layer in this phase
+- Add debug.observation call sites without a corresponding LOGGING_OBSERVATIONS.md entry
+  in the same commit
 - Log raw user questions in the events table payload field — payload carries derived
   structured data only; raw input lives in solves table only, joinable via correlation_id
 - Add new event kinds without registering them in backend/eventKinds.js

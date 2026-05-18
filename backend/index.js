@@ -20,7 +20,7 @@ const upload = multer({
   },
 });
 
-const BUILD_VERSION = "v4.2.0-events";
+const BUILD_VERSION = "v4.2.1-instrumented";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
@@ -1776,6 +1776,7 @@ app.post('/solve', async (req, res) => {
   const isMixedProse = detectMixedProseInput(question);
 
   const safeMode = mode === 'physics' ? 'physics' : 'math';
+  const correlationId = newCorrelationId();
 
   let systemPrompt;
   let temperature;
@@ -1908,6 +1909,15 @@ Mode: ${safeMode}`;
       } catch (parseErr) {
         console.warn('[PARSE] JSON parsing failed, fell back to legacy parsing. Error:', parseErr.message);
         answer = rawModelOutput;
+        logEvent({
+          kind: 'solve.model_parse_fail',
+          severity: 'warn',
+          correlationId,
+          sessionId: req.headers['x-session-id'] || null,
+          buildVersion: BUILD_VERSION,
+          payload: { mode: safeMode, error_message: parseErr.message?.slice(0, 200), raw_length: rawModelOutput.length },
+          message: 'Math solve: model returned non-JSON or missing fields',
+        });
       }
     } else {
       // Physics: structured JSON path (mirrors math path)
@@ -1998,6 +2008,15 @@ Mode: physics`;
       } catch (parseErr) {
         console.warn('[PARSE] Physics JSON parsing failed, fell back to raw. Error:', parseErr.message);
         answer = rawModelOutput;
+        logEvent({
+          kind: 'solve.model_parse_fail',
+          severity: 'warn',
+          correlationId,
+          sessionId: req.headers['x-session-id'] || null,
+          buildVersion: BUILD_VERSION,
+          payload: { mode: 'physics', error_message: parseErr.message?.slice(0, 200), raw_length: rawModelOutput.length },
+          message: 'Physics solve: model returned non-JSON or missing fields',
+        });
       }
     }
 
@@ -2031,6 +2050,20 @@ Mode: physics`;
         }
       } catch (verifyErr) {
         verification = { status: 'unavailable', reason: 'verification_error' };
+        logEvent({
+          kind: 'solve.verify_fail',
+          severity: 'warn',
+          correlationId,
+          sessionId: req.headers['x-session-id'] || null,
+          buildVersion: BUILD_VERSION,
+          payload: {
+            mode: safeMode,
+            error_message: verifyErr.message?.slice(0, 200),
+            normalized_used: !!normalizedExpression,
+            problem_kind: normalized?.kind || 'unknown',
+          },
+          message: 'Verifier threw during /solve',
+        });
       }
     } else {
       verification = { status: 'unavailable', reason: 'physics_not_supported' };
@@ -2067,7 +2100,38 @@ Mode: physics`;
       auditResult: null,
     });
 
+    const authHeader = req.headers['authorization'] || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const user = token ? getUserFromToken(token) : null;
+    const sessionIdFromHeader = req.headers['x-session-id'] || null;
+
+    let solveRow = null;
+    try {
+      solveRow = await insertSolve({
+        userId: user?.id || null,
+        sessionId: sessionIdFromHeader,
+        rawInput: rawInput,
+        mode: safeMode,
+        artifact,
+      });
+    } catch (dbErr) {
+      console.error('[solve] DB log failed (non-fatal):', dbErr.message);
+      logEvent({
+        kind: 'solve.exception',
+        severity: 'error',
+        correlationId,
+        userId: user?.id || null,
+        sessionId: sessionIdFromHeader,
+        buildVersion: BUILD_VERSION,
+        payload: { phase: 'db_insert', error_message: dbErr.message?.slice(0, 200) },
+        message: 'insertSolve threw — response degraded to no solve_id/session_id',
+      });
+    }
+
     res.json({
+      correlation_id: correlationId,
+      solve_id: solveRow?.id || null,
+      session_id: solveRow?.session_id || null,
       answer,
       verificationStatus: verification.status,
       verificationDetails: verification.details || verification.meta || null,
@@ -2077,28 +2141,21 @@ Mode: physics`;
       artifact,
     });
 
-    // Fire-and-forget: log solve to DB. Never block the response on this.
-    (async () => {
-      try {
-        const authHeader = req.headers['authorization'] || '';
-        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-        const user = token ? getUserFromToken(token) : null;
-        const sessionId = req.headers['x-session-id'] || null;
-        await insertSolve({
-          userId: user?.id || null,
-          sessionId,
-          rawInput: rawInput,
-          mode: safeMode,
-          artifact,
-        });
-      } catch (dbErr) {
-        console.error('[solve] DB log failed (non-fatal):', dbErr.message);
-      }
-    })();
-
   } catch (err) {
     console.error('Solve error:', err);
+    logEvent({
+      kind: 'solve.exception',
+      severity: 'error',
+      correlationId,
+      sessionId: req.headers['x-session-id'] || null,
+      buildVersion: BUILD_VERSION,
+      payload: { phase: 'handler', error_message: err.message?.slice(0, 200) },
+      message: 'Uncaught exception in /solve',
+    });
     res.status(500).json({
+      correlation_id: correlationId,
+      solve_id: null,
+      session_id: null,
       answer: '',
       verificationStatus: 'unavailable',
       verificationDetails: null,
@@ -2112,12 +2169,21 @@ Mode: physics`;
 
 // ---- /verify — CAS (math) or audit (physics) decoupled from /solve ----
 app.post('/verify', async (req, res) => {
-  const { mode, wolfram_query, final_answer_latex, question, structured_solution } = req.body;
+  const { mode, wolfram_query, final_answer_latex, question, structured_solution, correlation_id } = req.body;
+  const correlationId = correlation_id || null;
   const safeMode = mode === 'physics' ? 'physics' : 'math';
 
   try {
     if (safeMode === 'math') {
       if (!wolfram_query || !final_answer_latex) {
+        logEvent({
+          kind: 'verify.cas_skipped',
+          severity: 'info',
+          correlationId,
+          buildVersion: BUILD_VERSION,
+          payload: { has_query: !!wolfram_query, has_answer: !!final_answer_latex },
+          message: 'CAS skipped: null wolfram_query or missing final_answer_latex',
+        });
         return res.json({
           cas: { verdict: 'unavailable', wolfram_result: null, expression_checked: null, used: true }
         });
@@ -2130,9 +2196,34 @@ app.post('/verify', async (req, res) => {
       const wolframResult = await queryWolfram(wolfram_query, wolframKind);
       console.log('[/verify] wolfram result:', wolframResult.result);
 
+      if (!wolframResult.success) {
+        logEvent({
+          kind: 'verify.cas_timeout',
+          severity: 'warn',
+          correlationId,
+          buildVersion: BUILD_VERSION,
+          payload: { kind: wolframKind, wolfram_query: wolfram_query?.slice(0, 200) },
+          message: 'Wolfram API call returned no usable result',
+        });
+      }
+
       let verdict = 'unavailable';
       if (wolframResult.success && wolframResult.result) {
         verdict = await compareWithWolfram(final_answer_latex, wolframResult.result, wolframKind);
+        if (verdict === 'unavailable') {
+          logEvent({
+            kind: 'verify.compare_unavailable',
+            severity: 'info',
+            correlationId,
+            buildVersion: BUILD_VERSION,
+            payload: {
+              kind: wolframKind,
+              wolfram_result_length: wolframResult.result?.length || 0,
+              claude_answer_length: final_answer_latex?.length || 0,
+            },
+            message: 'compareWithWolfram fell through both numeric and model tiers',
+          });
+        }
       }
 
       const casResult = {
@@ -2166,11 +2257,29 @@ app.post('/verify', async (req, res) => {
 
       console.log('[/verify] Running physics audit...');
       const auditRaw = await runPhysicsAudit(question, structured_solution);
+      if (auditRaw.confidence === 'low' && (auditRaw.note?.includes('unparseable') || auditRaw.note?.includes('failed'))) {
+        logEvent({
+          kind: 'audit.parse_fail',
+          severity: 'warn',
+          correlationId,
+          buildVersion: BUILD_VERSION,
+          payload: { note: auditRaw.note?.slice(0, 200) },
+          message: 'Physics audit returned unparseable output or internal error',
+        });
+      }
       return res.json({ audit: { ...auditRaw, used: true } });
     }
 
   } catch (err) {
     console.error('[/verify] error:', err.message);
+    logEvent({
+      kind: 'solve.exception',
+      severity: 'error',
+      correlationId,
+      buildVersion: BUILD_VERSION,
+      payload: { phase: 'verify_handler', mode: safeMode, error_message: err.message?.slice(0, 200) },
+      message: 'Uncaught exception in /verify',
+    });
     const fallback = safeMode === 'math'
       ? { cas: { verdict: 'unavailable', wolfram_result: null, expression_checked: null, used: true } }
       : { audit: { agrees: false, audit_answer: null, method: null,
@@ -2245,6 +2354,14 @@ function runValidationTests() {
 // ---- /extract-problem — vision-based problem extraction from image ----
 app.post('/extract-problem', upload.single('image'), async (req, res) => {
   if (!req.file) {
+    logEvent({
+      kind: 'extract.unsupported_mimetype',
+      severity: 'warn',
+      sessionId: req.headers['x-session-id'] || null,
+      buildVersion: BUILD_VERSION,
+      payload: { content_type_header: req.headers['content-type']?.slice(0, 100) },
+      message: 'File rejected by multer fileFilter (unsupported mimetype) or no file uploaded',
+    });
     return res.status(400).json({ error: 'No image file provided' });
   }
 
@@ -2293,6 +2410,14 @@ Example (no math): []`;
     }
 
     if (problems.length === 0) {
+      logEvent({
+        kind: 'extract.no_problems_found',
+        severity: 'info',
+        sessionId: req.headers['x-session-id'] || null,
+        buildVersion: BUILD_VERSION,
+        payload: { mimetype: req.file?.mimetype, buffer_size: req.file?.size },
+        message: 'Vision model returned empty array',
+      });
       return res.json({ mode: 'none', message: 'No math problems found in this image.' });
     }
     if (problems.length === 1) {
@@ -2301,6 +2426,14 @@ Example (no math): []`;
     return res.json({ mode: 'multiple', problems });
   } catch (err) {
     console.error('[extract-problem] Error:', err.message);
+    logEvent({
+      kind: 'extract.exception',
+      severity: 'error',
+      sessionId: req.headers['x-session-id'] || null,
+      buildVersion: BUILD_VERSION,
+      payload: { mimetype: req.file?.mimetype, buffer_size: req.file?.size, error_message: err.message?.slice(0, 200) },
+      message: 'Uncaught exception in /extract-problem',
+    });
     res.status(500).json({ error: 'Failed to extract problems from image.' });
   }
 });
@@ -2409,6 +2542,19 @@ app.get('/history/get/:id', async (req, res) => {
         });
       } catch (revalErr) {
         console.error('[history/get] revalidation error (non-fatal):', revalErr.message);
+        logEvent({
+          kind: 'history.revalidation_failed',
+          severity: 'warn',
+          userId: user.id,
+          buildVersion: BUILD_VERSION,
+          payload: {
+            solve_id: id,
+            stored_version: data.build_version,
+            current_version: BUILD_VERSION,
+            error_message: revalErr.message?.slice(0, 200),
+          },
+          message: 'Lazy Tier 1 revalidation threw during /history/get',
+        });
         // Still return artifact as-is on revalidation error
         supabase.from('solves').update({
           last_revalidated_at: new Date().toISOString(),
@@ -2466,6 +2612,14 @@ app.post('/auth/merge-session', async (req, res) => {
     res.json({ merged: (data || []).length });
   } catch (err) {
     console.error('[auth/merge-session] error:', err.message);
+    logEvent({
+      kind: 'auth.merge_failed',
+      severity: 'warn',
+      userId: user?.id || null,
+      buildVersion: BUILD_VERSION,
+      payload: { session_id: session_id?.slice(0, 40), error_message: err.message?.slice(0, 200) },
+      message: 'Anonymous session merge failed',
+    });
     res.status(500).json({ error: 'Merge failed' });
   }
 });
@@ -2544,6 +2698,14 @@ app.post('/batch/extract', async (req, res) => {
     res.json({ problems: problems.slice(0, 50), truncated });
   } catch (err) {
     console.error('[batch/extract] error:', err.message);
+    logEvent({
+      kind: 'batch.extract_failed',
+      severity: 'error',
+      sessionId: req.headers['x-session-id'] || null,
+      buildVersion: BUILD_VERSION,
+      payload: { input_type, mimetype, error_message: err.message?.slice(0, 200) },
+      message: 'Batch extraction failed',
+    });
     res.status(500).json({ error: 'Extraction failed' });
   }
 });
@@ -2641,6 +2803,15 @@ app.post('/batch/solve', async (req, res) => {
       } catch (err) {
         summary.failed++;
         send({ type: 'problem_failed', index: idx, error: err.message });
+        logEvent({
+          kind: 'batch.problem_failed',
+          severity: 'warn',
+          userId: user?.id || null,
+          sessionId,
+          buildVersion: BUILD_VERSION,
+          payload: { problem_index: idx, mode, error_message: err.message?.slice(0, 200) },
+          message: 'Single problem failed during batch solve',
+        });
       }
     }));
   }
