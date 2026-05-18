@@ -172,6 +172,24 @@ generate "neat, never came back" reactions. Deployment becomes Phase 6.
 - History icon: top-left of workspace, quiet, placeholder
 - Interactive mode: bookmark tab on input composer
 
+### Session Tab (Phase 5a)
+- Fixed top-0, h-9, centered in content area.
+  left: calc(50% + sidebarWidth/2), transform: translateX(-50%).
+  Responsive to sidebar collapse state via sidebarWidth computed var.
+  z-[26] — sits above sticky answer bar (z-[25]), below left panel (z-30).
+- Empty state: low-opacity (8–12%) DM Serif Display "Ergo." watermark
+  inside a subtle tab frame. No fill. No animation on the element itself.
+- After first solve: watermark fades out, session title fades in.
+  200–300ms content swap. Element does not animate — content only.
+- After 2+ solves in session: forward/back arrows flank the title for
+  navigating between problems in that session.
+- Click title: inline rename (contentEditable or input swap).
+- Chevron/dots icon: opens session switcher (v1 scope TBD).
+- Sticky answer bar shifts from top-0 to top-9 to sit directly below
+  session tab. Both are always-present strips; sticky bar still uses
+  IntersectionObserver to slide in only when answer box scrolls out of view.
+- Solution view: pt-20 to accommodate both strips stacked at the top.
+
 ### Solve Surface
 - Final Answer: `bg-white/[0.04] border border-white/[0.08]`, no glow
 - Badge + user_reason: always visible
@@ -192,6 +210,46 @@ Stored in artifact, used for deterministic validation retry if raw input fails p
 
 ### Tier 3 — CAS / Advanced Verification (User-Invoked, Paid)
 Triggered by "Advanced verification" button. Gated behind Pro tier.
+
+### Step-Level Verification (locked)
+
+Pre-Deployment Phase 5b feature. Architecture is final.
+
+**What it does:** Each solution section is classified by step kind.
+Only deterministically-checkable steps are verified. All others are
+labeled honestly. No AI correctness judgment anywhere in this path.
+
+**Model output change — one new field per section:**
+`step_kind: 'transformation' | 'derivation' | 'application' | 'evaluation' | 'conceptual'`
+No new LaTeX fields. Zero additional equation output. Negligible token cost.
+
+**Server verification logic (deterministic only, no AI):**
+- `transformation` — equivalence check: compare this section's
+  `summary_latex` against the previous section's `summary_latex`
+  using existing numeric sampling (math.js). Verdict: verified |
+  mismatch | unverifiable. Never false-positive — inconclusive
+  sampling falls through to unverifiable, never mismatch.
+- `evaluation` — numeric equality check on both sides if evaluable.
+- `derivation`, `application`, `conceptual` — not equivalence-checkable.
+  No badge. Labeled honestly in UI. Never faked as verified.
+
+**Free vs Pro gating:**
+- Free: step badges visible on transformation/evaluation sections
+  (verified / mismatch / unverifiable / method-applied labels)
+- Pro: step diagnostic on mismatch — which step failed, evaluated
+  forms on both sides. Diagnostic is informational only. Never
+  overrides the final answer badge.
+
+**Hard rule:** The model classifies step_kind only. It never assesses,
+confirms, or checks correctness of any step. Classification is a
+labeling task. Deterministic math.js is the sole correctness authority
+for transformation steps. Fully consistent with the no-AI-checks-AI rule.
+
+**Bridge to future proprietary CAS:**
+The step_kind taxonomy is permanent infrastructure. When a proprietary
+CAS ships (logged in STRATEGIC_DECISIONS.md), derivation and application
+steps gain verification coverage without any refactor. The UI and
+architecture are unchanged — more step kinds earn badges over time.
 
 ### Hard Rule — "No AI Checks AI" Scope
 
@@ -243,6 +301,21 @@ The audit result is always labeled as an audit, never as verification.
 
 $2,000+/month net requires ~250–300 paying Pro users.
 At 4% free-to-paid conversion: need ~7,500 active free users.
+
+### Deployment + Monetization
+Phase 6 combines deployment and Stripe. The product ships with
+monetization on day one. No free-only launch period.
+Rationale: free-only launch generates API costs with no revenue signal
+and no conversion data to optimize against.
+
+### Pro Tier Value (locked)
+Pro is not limit removal only. The following are Pro-exclusive:
+- CAS / Advanced verification
+- Step diagnostics (mismatch detail)
+- Collections (create, organize, auto-organize)
+- Export: PDF, LaTeX, Anki — single solve and collections
+- Batch solve up to 50 problems (free: 15)
+- Full solve history
 
 ### Growth strategy
 - SEO: many targeted solver pages (one per problem type), not one generic page
@@ -466,17 +539,11 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     in Fix Brief 01 — no further changes to artifact.js required.
   - BUILD_VERSION: "v3.2.2-fixes"
 
-✅ Model Switch — Haiku for solution generation ✅ COMPLETE
-  - claude-haiku-4-5 replaces claude-sonnet-4-5 for primary /solve call.
-  - physicsAudit.js unchanged — stays on claude-sonnet-4-5.
-  - Passed quality bar on 8-problem test matrix (MODEL_COMPARISON.md): 69/80 Haiku vs 69/80 Sonnet (100%).
-  - Cost per solve reduced from ~$0.004–0.005 to ~$0.0008–0.001.
-  - SOLUTION_MODEL env var allows override. artifact.js cost_meta.model reads from env.
-  - BUILD_VERSION: "v3.2.3-haiku"
-  - claude-haiku-4-5 replaces claude-sonnet-4-5 for primary /solve call.
-  - physicsAudit.js unchanged — stays on claude-sonnet-4-5.
-  - Passed quality bar on 8-problem test matrix (MODEL_COMPARISON.md): 69/80 Haiku vs 69/80 Sonnet (100%).
-  - Cost per solve reduced from ~$0.004–0.005 to ~$0.0008–0.001.
+✅ Model Switch — Haiku tested, reverted to Sonnet ✅ COMPLETE
+  - claude-haiku-4-5 tested for primary /solve call. Passed quality bar:
+    69/80 Haiku vs 69/80 Sonnet (100%) on 8-problem test matrix (MODEL_COMPARISON.md).
+  - Reverted to claude-sonnet-4-5 by founder decision. Haiku not in production.
+  - physicsAudit.js stays on claude-sonnet-4-5.
   - SOLUTION_MODEL env var allows override. artifact.js cost_meta.model reads from env.
   - BUILD_VERSION: "v3.2.3-haiku"
 
@@ -1047,19 +1114,196 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
   - cancel-on-disconnect: req.on('close') aborts remaining processing.
   - BUILD_VERSION: "v4.1.0-batch"
 
-🔲 Phase 6 — Deployment
-Vercel (frontend) + Railway/Render (backend), domain, meta/OG tags, env-var API URL.
-Production Supabase Auth redirect URL added during this phase.
+🔲 Phase 5a — Session Model + Sidebar Restructure + Quick Wins
 
-🔲 Phase 7 — Monetization (Stripe + Pro gating)
-Deferred. Free tier only at launch. Re-evaluate after 30 days of usage data.
+  JPEG Extraction Bug — diagnose before any code change:
+  - Pull actual error output from /extract-problem logs first.
+  - Do not write a fix blind. Candidates: Anthropic vision API rejection
+    of JPEG format, multer memory buffer issue losing file data, model
+    returning mode: none for valid images, 10MB size limit hit.
+  - Identify root cause from log evidence, then fix surgically.
 
-🔲 Phase 8 — Interactive Mode (Full)
-Conversational follow-up on solved problems, concept exploration, related examples.
+  Quick Wins (independent, no dependencies):
+  - Batch modal: center it and increase size. Pure CSS/layout tuning.
+  - Shared handleImageFile: already extracted in Polish Brief 08 for
+    main composer. Extend to wire into: batch modal file input,
+    batch modal drop zone, batch modal paste handler. Single source
+    of truth. No logic duplication.
+  - "Batch solve" entry: remove from input bar area. Add to sidebar
+    at same level as Sessions / Profile / Settings. Click opens the
+    3-stage batch modal. No other behavior change.
 
-🔲 Phase 9 — Analytics
-Verification tier tracking, failure reasons, suggestion usage, conversion funnel,
-cost-per-solve.
+  Session Data Model:
+  - Add session_id column to existing solves table. Do not create a
+    separate sessions table in v1 — derive all session metadata from
+    queries on this column.
+  - Session ID derivation: 4-hour clustering rule. A new solve gets
+    the session_id of the most recent solve by the same user within
+    the last 4 hours. If none exists, a new session_id is generated.
+    Threshold value must be defined as a named constant in code
+    (SESSION_CLUSTER_HOURS = 4) — configurable without a search/replace.
+  - Auto-naming: session name = first problem's kind + date.
+    Example: "Calculus, Nov 7". Stored as a derivable label, not a
+    separate DB column in v1 (compute from first solve in session).
+  - PATCH /sessions/:id/rename endpoint: updates the session name for
+    all solves sharing that session_id. Requires auth JWT.
+  - /history/list updated: returns solves grouped by session_id with
+    session metadata (name, solve count, last_updated).
+
+  Sidebar Restructure + Optimistic Insert (ship as one unit — coupled):
+  - Three-level hierarchy: time bucket > session > problem.
+  - Time buckets: Today / Yesterday / This week / Older.
+    Today bucket: auto-expanded on load.
+    Sessions within Today: auto-expanded.
+    All other buckets and their sessions: collapsed by default.
+  - Sessions within each bucket auto-grouped by session_id.
+    Displayed with auto-generated name and solve count.
+  - Problems within each session listed as clickable rows showing
+    truncated question text and verification badge.
+  - Session header click: expand/collapse that session. No solve load.
+    Loading is always at problem level — never triggered by session click.
+  - Problem click: load that solve artifact into main workspace.
+    Top-center session tab updates to reflect that session name.
+  - Optimistic insert: on solve fire (/solve called), a new problem row
+    appears immediately under the current session in the sidebar with
+    a subtle "solving..." state. Reconcile (update badge, question text)
+    when /solve returns. If solve fails, remove the optimistic row.
+  - New solves always go to the current time-cluster session.
+    Loading an old solve is a view-only action. Firing a new solve
+    always creates or extends the current 4-hour-window session,
+    regardless of what old solve is currently displayed in the workspace.
+    Top-center tab updates to current session on solve fire.
+
+  Top-Center Session Tab:
+  - See Section 5 (Layout Blueprint) for full visual spec.
+  - State management: one source of truth shared between the session tab
+    and the sidebar. Same state object drives both surfaces.
+  - Session tab reflects the active session (current 4-hour window).
+    When user loads an old solve, tab shows that solve's session name
+    but new solves still fire into the current session.
+
+  Batch Entry + Result Panel Refactor (replaces Phase 5 full-screen overlay):
+  - "Batch solve" entry: now in sidebar as noted in Quick Wins above.
+  - Batch result view: full-screen overlay (Phase 5) is deleted entirely.
+    Replaced by a secondary expanding panel.
+  - Secondary panel: slides out to the right of the main sidebar when
+    a batch job is active, pushing the main content area right.
+    Panel is contextual — absent when no batch is active.
+    Honors the no-permanent-rail principle.
+  - Trigger: click the batch progress indicator in the main sidebar
+    (pulsing amber dot while processing, colored dot when complete).
+    Panel expands. Click again or click outside to collapse.
+  - Panel contents: queue list. Each item shows question (truncated),
+    position in queue, and badge (or "solving..." state while pending).
+    Click any queue item → loads that solve artifact into the main
+    single-solve renderer in the workspace. Full solve view, not a
+    summary. Discrepancy-first: auto-expand first discrepant item on
+    batch complete.
+  - Panel width: fixed, not resizable in v1. Reasonable minimum to
+    show truncated question + badge without wrapping.
+  - Batch session: each batch job is its own session. Auto-named from
+    extraction source — filename if input was a document
+    ("Problems from notes.pdf"), first problem text if raw input.
+    Does not merge into the surrounding time-cluster session.
+    Appears in sidebar hierarchy under its time bucket as a named
+    session like any other.
+
+  Do Not Build in Phase 5a (log in STRATEGIC_DECISIONS.md):
+  - Manual session creation
+  - Manual session switching of new solves into old sessions
+  - "Continue this session" feature
+  Rationale: auto-grouping + view-only old sessions is the correct v1
+  model. Post-launch candidates — revisit when user behavior data shows
+  meaningful demand for manual control.
+
+🔲 Phase 5b — Pre-Deployment Features
+
+  Step-Level Verification:
+  - Add `step_kind` enum to solution JSON schema in math and physics
+    system prompts. Values: transformation | derivation | application |
+    evaluation | conceptual. No other schema changes.
+  - Server logic in artifact.js or index.js:
+    transformation → numeric equivalence check on consecutive
+    summary_latex values via existing math.js sampling.
+    evaluation → numeric equality check.
+    All other kinds → not checked, no badge.
+  - step_verification array added to artifact output:
+    [{ section_index, step_kind, status: 'verified' | 'mismatch' |
+    'unverifiable' | 'not_checked', evaluated_a, evaluated_b }]
+    evaluated_a/b populated only on mismatch (Pro diagnostic data).
+  - Frontend: per-section step badge renders beneath section title.
+    Free: badge label only. Pro: mismatch expands inline diagnostic
+    showing evaluated forms. Badge colors: emerald verified,
+    amber mismatch, zinc unverifiable/not_checked.
+
+  Collections (Pro-only):
+  - Schema: `collections` table (id, user_id, name, created_at) +
+    `collection_solves` join table (collection_id, solve_id).
+    Many-to-many. No default collection.
+  - Auto-organize: POST /collections/auto-organize clusters user's
+    existing solves by problem_kind and question text server-side.
+    No AI call. Returns suggested collection names + solve lists.
+    User accepts, renames, or dismisses. Partial acceptance allowed.
+    Never overwrites existing collections.
+  - Manual multi-select: checkbox on hover over history items.
+    Bulk action bar on selection. Assign to existing or new collection.
+  - Endpoints: POST /collections, DELETE /collections/:id,
+    POST /collections/:id/solves (single or array),
+    DELETE /collections/:id/solves/:solve_id,
+    GET /collections (list with solve counts),
+    POST /collections/auto-organize.
+  - UI: Collections opens as a tab in the solve area.
+    Default: grid of collection cards (name, solve count, top 3
+    problem_kind badges, last updated). Toggle to list view.
+    View preference persists in localStorage.
+    Click collection → solve list inside (same toggle).
+    Click solve → loads artifact into workspace.
+  - Free tier: Collections tab shows Pro upsell. No CRUD.
+  - No collection sharing. Export covers that use case.
+  - Collection delete does not delete constituent solves.
+
+  Share Permalinks + Public Solve Pages (same system):
+  - See Section 14 for full spec.
+  - Schema additions to solves table: share_hash varchar(8) unique,
+    is_public boolean default false, canonical_slug text nullable.
+  - POST /share: generates share_hash, sets is_public if quality gate
+    passes, claims canonical_slug if available for that problem.
+  - DELETE /share/:hash: sets is_public false. Hash returns 410 Gone.
+    canonical_slug and SEO page unaffected if already promoted.
+
+  Export (Pro-only):
+  - See Section 16 for full spec.
+  - Formats: PDF, LaTeX, Anki — all three for single solve and collection.
+  - POST /export/solve/:id and POST /export/collection/:id.
+    Body: { format: 'pdf' | 'latex' | 'anki' }. Pro JWT required.
+  - Free tier: Export entry point absent from UI entirely. Not hidden,
+    not disabled — not rendered for free users.
+
+🔲 Phase 6 — Deployment + Monetization (combined)
+  - Vercel (frontend) + Railway/Render (backend), custom domain.
+  - NEXT_PUBLIC_API_URL env var wired for production.
+  - Production Supabase Auth redirect URL configured.
+  - Meta/OG tags. Schema.org structured data on public solve pages.
+  - Sitemap generation for canonical /solve/[type]/[slug] pages.
+  - Stripe: subscription checkout, webhook handler
+    (customer.subscription.created / updated / deleted),
+    subscription status stored on Supabase user record.
+    Pro flag read server-side on every gated request.
+    Never trust client-side Pro claim.
+  - Price: $12/month at launch. Test $15 after 30 days conversion data.
+  - ToS at deployment: solving on Ergo. grants Ergo. perpetual right
+    to use verified problem statements and solutions as canonical
+    reference content without user attribution.
+
+🔲 Phase 7 — Interactive Mode (Full)
+  Conversational follow-up on solved problems. UI already scaffolded
+  (interactive bookmark tab, interactiveMode state). Full behavior
+  post-deployment only. interactiveMode never resets between solves.
+
+🔲 Phase 8 — Analytics
+  Verification tier hit rates by problem_kind, step verification
+  mismatch rate by step_kind, failure reasons, suggestion usage,
+  conversion funnel, cost-per-solve, share/SEO page click-through.
 ```
 
 ---
@@ -1262,6 +1506,11 @@ Frontend (/frontend/src/app/page.tsx)
   - wolfram.js: limit kind (podTargets + inferKindFromQuery), implicit diff →
     differentiation kind. toMathjs: infinity normalization (∞ → Infinity).
   - BUILD_VERSION: "v4.1.0-batch"
+  - PENDING Phase 5a change: sticky answer bar currently fixed at top-0
+    (Polish Brief 03b). Must shift to top-9 when session tab is implemented
+    to sit below the session tab strip. Solution view pt-20 required.
+    Do not implement this sticky bar shift in isolation — it ships as part
+    of Phase 5a alongside the session tab.
 
 Phase 5 — Batch Solve (new)
   - backend: solveOne(rawInput, mode) standalone async function — full solve
@@ -1286,6 +1535,8 @@ Phase 5 — Batch Solve (new)
     with color-coded counts. Per-problem cards (badge + user_reason visible;
     final answer hidden). Click card to expand inline (full artifact rendered
     including BlockMath). Discrepancy-first: auto-expand first discrepant problem.
+    NOTE: This result view is superseded by Phase 5a — see Phase 5a
+    batch result panel spec. Full-screen overlay is deleted in Phase 5a.
   - beforeunload warning while batchStage === 'processing'.
   - "Batch solve" text link between Physics tab and mode tabs row.
 
@@ -1361,6 +1612,37 @@ Phase 4 — History + Library + Auth (new)
 - Skip the editable review step in the batch modal
 - Allow batches to exceed server-side caps (15 free / 50 Pro)
 - Process batch problems via a different code path than /solve
+- Add step verification badges to derivation, application, or
+  conceptual steps — these are not equivalence-checkable
+- Use AI to assess, confirm, or check whether any solution step
+  is correct (model classifies step_kind only — labeling, not judging)
+- Surface user identity, email, or session data on public solve pages
+- Serve another user's raw session artifact directly as a public page
+  (always re-render from artifact record, anonymized)
+- Overwrite or revoke a canonical_slug after it has been claimed
+- Make Collections available on the free tier
+- Make Export available on the free tier — absent from UI, not hidden
+- Build a browse index or paginated list of public solve pages
+- Gate the share link (/v/hash) behind Pro or authentication
+- Run auto-organize using an AI call — algorithmic only
+- Allow collection delete to cascade-delete constituent solves
+- Strip verification badge or step status from exported files
+- Defer Stripe to a post-deployment phase — ships with Phase 6
+- Load a solve when a user clicks a session header — loading is always
+  at problem level, never triggered by session click
+- Fix the JPEG extraction bug without first pulling and reading actual
+  logs from /extract-problem — diagnose before writing any code
+- Merge a batch job's solves into the surrounding time-cluster session —
+  batch is always its own named session
+- Implement manual session creation in v1
+- Implement manual session switching of new solves into old sessions in v1
+- Implement a "continue this session" feature in v1
+- Remove the optimistic sidebar row on solve fire before the /solve
+  response returns — show "solving..." state, reconcile on return
+- Create a separate sessions table — derive all session metadata from
+  queries on the session_id column of the solves table in v1
+- Hard-code the 4-hour session cluster threshold — it must be a named
+  constant (SESSION_CLUSTER_HOURS) configurable in code
 
 ---
 ## 11b. What Claude Code Must Always Do
@@ -1416,4 +1698,175 @@ Hard rules for batch UX:
 ---
 ## 13. One-Paragraph Product Summary
 
-Ergo. is a trust-first math and physics solver whose differentiator is visible correctness, not just AI output. It serves anyone who needs a correct, verifiable answer — engineers, researchers, advanced students, professionals. The solve experience is a single vertical flow: input → answer → visible verification state → overview → visible procedural sections → optional depth on demand. Radically minimal: no rail, no duplicated controls, no chat feel, no collapsed steps. Deterministic validation (math.js) is the backbone. Normalization is embedded in the solution call at zero extra cost. CAS is gated behind the paid tier ($12/month Pro). The interface feels like an environment — dark, precise, monochrome zinc, DM Serif Display for identity, Geist Sans for everything functional. The business target is 250–300 Pro users for $2,000+/month net, driven by SEO and a free tier conversion funnel.
+Ergo. is a trust-first math and physics solver whose differentiator
+is visible correctness at every level — final answer, individual
+solution steps, and cross-method audit. It serves engineers,
+researchers, and advanced students who need a correct, verifiable
+answer. The solve experience is a single vertical flow: input →
+answer → visible verification state → proof → optional depth on
+demand. Radically minimal: no rail, no duplicated controls, no chat
+feel. Deterministic validation (math.js) is the backbone. Step-level
+verification classifies each solution step and runs equivalence checks
+where deterministic methods apply — honest labeling everywhere else,
+with a clear upgrade path to proprietary CAS coverage. CAS,
+Collections, Export, and step diagnostics are gated behind Pro
+($12/month). Verified solves become public canonical pages at
+/solve/[type]/[slug], discoverable by search and sharable by any
+user via /v/[hash] — share permalinks and SEO pages are the same
+system. Collections let Pro users organize and auto-group their
+library. Export produces PDF, LaTeX, and Anki decks for single
+solves and collections. The product ships with Stripe on day one.
+The business target is 250–300 Pro users for $2,000+/month net,
+driven by SEO on the canonical solve pages and a free-to-paid
+funnel gated on CAS, Collections, and Export.
+
+---
+## 14. Share Permalinks & Public Solve Pages
+
+Share permalinks and public SEO solve pages are the same system.
+One underlying solves record, two URL access paths.
+
+### URL forms
+- `/v/[8-char-base62-hash]` — share access. Works for any solve
+  the user has shared, regardless of verification status.
+- `/solve/[problem-type]/[slug]` — canonical SEO path. Exists only
+  when quality gate passes AND no prior canonical version for this
+  normalized problem has been claimed.
+
+### Quality gate (locked)
+Promotes to canonical indexable page only when:
+  badge === 'verified' || cas.verdict === 'confirmed'
+Below gate: noindex, hash access only. Share link always works.
+
+### Slug generation
+Derived from question text: lowercase, hyphens, LaTeX stripped to
+readable form, problem-type prefix.
+Example: /solve/integration/integrate-x-squared-sin-x
+Deduplication: if canonical_slug already exists for a normalized
+problem, the new solve does not claim a second slot. Existing page
+is authoritative.
+
+### Schema additions to solves table
+- share_hash varchar(8) — generated on share, unique index
+- is_public boolean default false
+- canonical_slug text nullable — set once, never overwritten
+
+### What renders on public pages (locked)
+- Problem statement
+- Final answer with verification badge
+- Full solution sections with step badges
+- One-line verification summary (user_reason)
+- "Verified by Ergo." stamp
+- CTA: "Solve your own problem →"
+- Schema.org structured data (MathSolver or FAQPage type)
+
+### What NEVER renders on public pages (locked)
+- User identity, email, or any personal attribution
+- Session or timestamp data tied to a user
+- Raw session artifact served directly — always re-rendered from
+  the artifact record, anonymized at generation time
+
+### Crawl rules
+- Canonical pages: indexable, in sitemap, schema.org markup
+- Hash-only pages: noindex, nofollow
+- Discrepancy or unverified solves: never promoted, never indexed
+
+### Deletion and canonical ownership
+- User can delete share access (DELETE /share/:hash → 410 Gone).
+  is_public set to false. Canonical slug unaffected.
+- Canonical slug is never revocable. Once claimed and indexed, it
+  belongs to Ergo. regardless of original user account state.
+  SEO surface cannot be fragile to user churn.
+
+### Anonymous sharing
+Anonymous users can share. Anonymous shares are quality-gated and
+promoted to canonical if verified. Viral loop is never gated
+behind authentication.
+
+### Relationship to private library (Section 12)
+Public pages and the private library are different surfaces of the
+same data. No browse index, no paginated list, no "all public solves"
+route. Public pages are individually reachable only. Ever.
+
+---
+## 15. Collections
+
+Pro-exclusive. Not available on free tier.
+
+### Purpose
+Let Pro users organize their solve library into named collections
+for exam prep, coursework, or topic grouping.
+
+### Data model
+- collections table: id, user_id, name, created_at
+- collection_solves join table: collection_id, solve_id
+- Many-to-many: one solve can belong to multiple collections
+- No default collection
+- No hierarchy — flat collections only in v1
+- Collection delete does not delete constituent solves
+
+### Adding solves
+Manual multi-select: checkbox appears on hover over history/sessions
+items. Bulk action bar appears on any selection. User assigns to
+existing collection or creates new one from selection.
+
+Auto-organize: POST /collections/auto-organize. Algorithmic clustering
+using existing problem_kind and question fields — no AI call. Returns
+suggested collection names with solve lists. User accepts, renames,
+or dismisses each suggestion. Partial acceptance allowed. Never
+overwrites existing collections.
+
+### UI
+Collections opens as a tab in the solve area. Not a sidebar panel,
+not a modal.
+- Default: grid of collection cards showing name, solve count, top 3
+  problem_kind badges, last updated timestamp
+- Toggle to list view — preference persists in localStorage
+- Click collection → solve list (same grid/list toggle)
+- Click solve → loads artifact into workspace
+- Free tier: Collections tab visible, Pro upsell shown, no CRUD
+
+### Hard rules
+- Pro-only — free tier sees upsell only
+- No collection sharing as a direct feature (Export covers this)
+- No hierarchy in v1
+- Auto-organize is always algorithmic, never an AI call
+- Auto-organize never overwrites existing collections
+
+---
+## 16. Export
+
+Pro-exclusive. No export access on free tier.
+
+### Formats (all three for single solve and collection)
+- PDF — formatted document: problem, answer, verification badge,
+  solution sections with step badges, Ergo. attribution.
+  Generated server-side.
+- LaTeX — .tex file with document wrapper, math environments,
+  sections as proof steps. Ready for Overleaf or pdflatex.
+- Anki — .apkg flashcard deck (SQLite format via anki-apkg-export
+  or equivalent). Front: problem statement. Back: final answer +
+  key solution steps + verification badge status.
+  Single solve: one card. Collection: one deck, one card per solve.
+
+### Endpoints
+- POST /export/solve/:id — body: { format: 'pdf' | 'latex' | 'anki' }
+- POST /export/collection/:id — body: { format: 'pdf' | 'latex' | 'anki' }
+Both require valid Pro JWT. Return file download with correct
+Content-Disposition and MIME type.
+
+### UI entry points
+- Single solve: Export option in the action cluster. Click → format
+  picker (PDF / LaTeX / Anki). Download triggers immediately.
+- Collection: Export button in collection header. Same format picker.
+  Collection PDF is paginated (one solve per section).
+  Collection Anki creates one deck with one card per solve.
+
+### Hard rules
+- Pro-only — enforced server-side, not just UI-gated
+- Free tier: Export entry point not rendered (absent, not hidden)
+- No bulk export from flat history view — scoped to single solve
+  or named collection only
+- Exported files always include verification state — never strip
+  badge or step status from any export format
+- Anki cards: front/back only, no step diagnostics in card content

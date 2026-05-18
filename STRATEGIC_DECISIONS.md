@@ -239,6 +239,38 @@ Build SymPy now as part of Phase 3 or 6. Ship with SymPy + Wolfram both wired in
 ---
 
 *Add this section to STRATEGIC_DECISIONS.md after OPEN QUESTION 2, before the RESOLVED sections.*
+---
+
+## DEFERRED DECISION — Session Model: Manual Controls (Phase 5a)
+
+**Status:** Deferred. Do not build in Phase 5a. Post-launch candidates.
+
+### Deferred features
+- Manual session creation
+- Manual session switching (assigning new solves to old sessions)
+- "Continue this session" feature
+
+### Rationale
+Auto-grouping via 4-hour clustering is the correct v1 model. Manual controls
+add UI complexity before product-market fit is established. The 4-hour window
+covers the realistic solve session length for a student working through a
+problem set. Edge cases (returning to a session after a break) are acceptable
+losses in v1 — the cost of the wrong grouping is low, the cost of building
+manual controls before users demand them is high.
+
+### Trigger condition
+Re-evaluate when: >20% of support requests or user feedback explicitly
+mentions wanting to organize solves into named sessions manually, OR when
+usage patterns show a significant share of solves (>15%) occurring in
+cross-day multi-session patterns that the 4-hour window consistently misgroups.
+
+### How to apply
+When trigger is met, read this entry first. Consider whether auto-grouping
+improvements (longer window, smarter clustering by problem_kind) solve the
+pain before adding manual controls. Manual session creation is the last resort.
+
+---
+
 ## REVISION LOG
 
 - **Initial draft** — Logged after conversation about moving from "validated solver" to potential "workflow environment." Decided to defer all expansion decisions until post-Phase 5 conversion data exists.
