@@ -1147,6 +1147,19 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
   - No solve correctness, prompt, verification, or UI behavior changed.
   - BUILD_VERSION: "v4.2.1-instrumented"
 
+✅ Pre-5a — JPEG Bug Diagnostic Instrumentation ✅ COMPLETE
+  - Five debug.observation call sites added inside /extract-problem handler:
+    entry, pre-API, model_response, post_parse, outer_catch.
+  - All tagged with _diag_session: "jpeg_bug_2026_05" for filtered querying.
+  - correlationId generated at handler entry, threaded through all observation
+    events and the existing structured kinds (extract.unsupported_mimetype,
+    extract.no_problems_found, extract.exception).
+  - LOGGING_OBSERVATIONS.md updated with five active entries.
+  - No fix attempted. Pure evidence-gathering. Root cause identification and
+    surgical fix ship as a separate brief after evidence is captured from a
+    failing JPEG upload.
+  - BUILD_VERSION: "v4.2.2-jpeg-diag"
+
 🔲 Phase 5a — Session Model + Sidebar Restructure + Quick Wins
 
   JPEG Extraction Bug — diagnose before any code change:

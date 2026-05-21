@@ -20,7 +20,7 @@ const upload = multer({
   },
 });
 
-const BUILD_VERSION = "v4.2.1-instrumented";
+const BUILD_VERSION = "v4.2.2-jpeg-diag";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
@@ -2353,10 +2353,33 @@ function runValidationTests() {
 
 // ---- /extract-problem — vision-based problem extraction from image ----
 app.post('/extract-problem', upload.single('image'), async (req, res) => {
+  const correlationId = newCorrelationId();
+
+  // OBSERVATION 1 — entry
+  logEvent({
+    kind: 'debug.observation',
+    severity: 'info',
+    correlationId,
+    sessionId: req.headers['x-session-id'] || null,
+    buildVersion: BUILD_VERSION,
+    payload: {
+      _diag_session: 'jpeg_bug_2026_05',
+      where: 'extract_problem.entry',
+      has_file: !!req.file,
+      file_mimetype: req.file?.mimetype || null,
+      file_size_bytes: req.file?.size || null,
+      file_original_name: req.file?.originalname || null,
+      content_type_header: req.headers['content-type']?.slice(0, 120) || null,
+      content_length_header: req.headers['content-length'] || null,
+    },
+    message: 'extract-problem: handler entry',
+  });
+
   if (!req.file) {
     logEvent({
       kind: 'extract.unsupported_mimetype',
       severity: 'warn',
+      correlationId,
       sessionId: req.headers['x-session-id'] || null,
       buildVersion: BUILD_VERSION,
       payload: { content_type_header: req.headers['content-type']?.slice(0, 100) },
@@ -2382,6 +2405,24 @@ Example (no math): []`;
   const base64Image = req.file.buffer.toString('base64');
   const mediaType = req.file.mimetype;
 
+  // OBSERVATION 2 — pre-API
+  logEvent({
+    kind: 'debug.observation',
+    severity: 'info',
+    correlationId,
+    sessionId: req.headers['x-session-id'] || null,
+    buildVersion: BUILD_VERSION,
+    payload: {
+      _diag_session: 'jpeg_bug_2026_05',
+      where: 'extract_problem.pre_api',
+      media_type_sent_to_anthropic: mediaType,
+      base64_length: base64Image.length,
+      base64_first_24_chars: base64Image.slice(0, 24),
+      buffer_size_bytes: req.file.buffer.length,
+    },
+    message: 'extract-problem: about to call Claude vision',
+  });
+
   try {
     const response = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
@@ -2399,6 +2440,27 @@ Example (no math): []`;
     const rawText = response.content?.[0]?.text?.trim() || '';
     const cleaned = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
 
+    // OBSERVATION 3 — model response
+    logEvent({
+      kind: 'debug.observation',
+      severity: 'info',
+      correlationId,
+      sessionId: req.headers['x-session-id'] || null,
+      buildVersion: BUILD_VERSION,
+      payload: {
+        _diag_session: 'jpeg_bug_2026_05',
+        where: 'extract_problem.model_response',
+        media_type_sent_to_anthropic: mediaType,
+        raw_response_length: rawText.length,
+        raw_response_text: rawText.slice(0, 5000),
+        cleaned_response_length: cleaned.length,
+        cleaned_response_text: cleaned.slice(0, 5000),
+        response_stop_reason: response?.stop_reason || null,
+        response_usage: response?.usage || null,
+      },
+      message: 'extract-problem: raw response from Claude vision',
+    });
+
     let problems = [];
     try {
       const parsed = JSON.parse(cleaned);
@@ -2409,10 +2471,28 @@ Example (no math): []`;
       console.warn('[extract-problem] Non-JSON response:', rawText.slice(0, 100));
     }
 
+    // OBSERVATION 4 — after parse
+    logEvent({
+      kind: 'debug.observation',
+      severity: 'info',
+      correlationId,
+      sessionId: req.headers['x-session-id'] || null,
+      buildVersion: BUILD_VERSION,
+      payload: {
+        _diag_session: 'jpeg_bug_2026_05',
+        where: 'extract_problem.post_parse',
+        problems_count: problems.length,
+        problems_preview: problems.slice(0, 5).map(p => typeof p === 'string' ? p.slice(0, 200) : '[non-string]'),
+        parse_succeeded: problems.length > 0 || cleaned === '[]',
+      },
+      message: 'extract-problem: parsed problems array',
+    });
+
     if (problems.length === 0) {
       logEvent({
         kind: 'extract.no_problems_found',
         severity: 'info',
+        correlationId,
         sessionId: req.headers['x-session-id'] || null,
         buildVersion: BUILD_VERSION,
         payload: { mimetype: req.file?.mimetype, buffer_size: req.file?.size },
@@ -2426,9 +2506,30 @@ Example (no math): []`;
     return res.json({ mode: 'multiple', problems });
   } catch (err) {
     console.error('[extract-problem] Error:', err.message);
+    // OBSERVATION 5 — outer catch
+    logEvent({
+      kind: 'debug.observation',
+      severity: 'warn',
+      correlationId,
+      sessionId: req.headers['x-session-id'] || null,
+      buildVersion: BUILD_VERSION,
+      payload: {
+        _diag_session: 'jpeg_bug_2026_05',
+        where: 'extract_problem.outer_catch',
+        file_mimetype: req.file?.mimetype || null,
+        file_size_bytes: req.file?.size || null,
+        error_name: err?.name || null,
+        error_message: err?.message?.slice(0, 500) || null,
+        error_status: err?.status || null,
+        error_type: err?.type || null,
+        is_anthropic_error: err?.constructor?.name?.includes('Anthropic') || err?.constructor?.name === 'APIError',
+      },
+      message: 'extract-problem: outer catch — exception during processing',
+    });
     logEvent({
       kind: 'extract.exception',
       severity: 'error',
+      correlationId,
       sessionId: req.headers['x-session-id'] || null,
       buildVersion: BUILD_VERSION,
       payload: { mimetype: req.file?.mimetype, buffer_size: req.file?.size, error_message: err.message?.slice(0, 200) },
