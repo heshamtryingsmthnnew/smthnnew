@@ -114,8 +114,6 @@ type BatchSummary = {
 
 type BatchModalStage = 'idle' | 'input' | 'review' | 'processing' | 'complete';
 
-const FREE_BATCH_CAP = 15;
-
 function relativeTime(dateStr: string): string {
   const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
   if (diff < 60) return 'just now';
@@ -126,6 +124,8 @@ function relativeTime(dateStr: string): string {
 }
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+// Dev flag — enables batch UI for local testing. Unset in production until Phase 6 wires real Pro flag.
+const BATCH_UI_ENABLED = process.env.NEXT_PUBLIC_SHOW_BATCH_UI === 'true';
 
 const MATH_EXAMPLES = [
   'x^2 + 5x + 6 = 0',
@@ -660,10 +660,6 @@ export default function Home() {
   const startBatchSolve = async () => {
     const problems = batchDraftProblems.filter(p => p.trim());
     if (problems.length === 0) return;
-    if (problems.length > FREE_BATCH_CAP) {
-      setBatchExtractError(`Free batch limit is ${FREE_BATCH_CAP} problems. Remove ${problems.length - FREE_BATCH_CAP} to continue.`);
-      return;
-    }
 
     const initialProblems: BatchProblem[] = problems.map((text, index) => ({ index, text, status: 'queued' }));
     setBatchProblems(initialProblems);
@@ -1229,8 +1225,8 @@ export default function Home() {
 
         {sidebarOpen && <div className="my-4 border-t border-white/[0.08]" />}
 
-        {/* Batch indicator — shown when processing or complete */}
-        {sidebarOpen && (batchStage === 'processing' || batchStage === 'complete') && (
+        {/* Batch indicator — shown when processing or complete, Pro-only */}
+        {BATCH_UI_ENABLED && sidebarOpen && (batchStage === 'processing' || batchStage === 'complete') && (
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); setShowBatchResults(true); }}
@@ -2064,16 +2060,19 @@ export default function Home() {
               Physics
             </button>
 
-            <span className="text-zinc-700">·</span>
-
-            <button
-              type="button"
-              onClick={openBatchModal}
-              disabled={loading}
-              className="pb-1 text-sm text-zinc-600 transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Batch solve
-            </button>
+            {BATCH_UI_ENABLED && (
+              <>
+                <span className="text-zinc-700">·</span>
+                <button
+                  type="button"
+                  onClick={openBatchModal}
+                  disabled={loading}
+                  className="pb-1 text-sm text-zinc-600 transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Batch solve
+                </button>
+              </>
+            )}
           </div>
 
           {/* Interactive tab */}
@@ -2389,9 +2388,9 @@ export default function Home() {
         )}
       </AnimatePresence>
 
-      {/* Batch modal — Stages: input, review */}
+      {/* Batch modal — Stages: input, review — Pro-only */}
       <AnimatePresence>
-        {(batchStage === 'input' || batchStage === 'review') && (
+        {BATCH_UI_ENABLED && (batchStage === 'input' || batchStage === 'review') && (
           <motion.div
             key="batch-backdrop"
             initial={{ opacity: 0 }}
@@ -2494,11 +2493,11 @@ export default function Home() {
                   {/* Counter */}
                   <div className="mb-3 flex items-center justify-between">
                     <span className={`text-[12px] font-medium ${
-                      batchDraftProblems.length >= FREE_BATCH_CAP ? 'text-red-400' :
-                      batchDraftProblems.length >= FREE_BATCH_CAP - 3 ? 'text-amber-400' :
+                      batchDraftProblems.length >= 50 ? 'text-red-400' :
+                      batchDraftProblems.length >= 47 ? 'text-amber-400' :
                       'text-zinc-400'
                     }`}>
-                      {batchDraftProblems.length} problem{batchDraftProblems.length !== 1 ? 's' : ''} — max {FREE_BATCH_CAP}
+                      {batchDraftProblems.length} problem{batchDraftProblems.length !== 1 ? 's' : ''} — max 50
                     </span>
                     <button type="button" onClick={() => setBatchStage('input')} className="text-[12px] text-zinc-600 hover:text-zinc-300">← Back</button>
                   </div>
@@ -2534,7 +2533,7 @@ export default function Home() {
 
                   <div className="mt-4 flex justify-end">
                     <button type="button" onClick={startBatchSolve}
-                      disabled={batchDraftProblems.filter(p => p.trim()).length === 0 || batchDraftProblems.filter(p => p.trim()).length > FREE_BATCH_CAP}
+                      disabled={batchDraftProblems.filter(p => p.trim()).length === 0 || batchDraftProblems.filter(p => p.trim()).length > 50}
                       className="rounded-md bg-white px-5 py-2 text-[14px] font-medium text-zinc-950 transition hover:bg-zinc-100 disabled:opacity-40">
                       Solve {batchDraftProblems.filter(p => p.trim()).length} problem{batchDraftProblems.filter(p => p.trim()).length !== 1 ? 's' : ''}
                     </button>
@@ -2546,9 +2545,9 @@ export default function Home() {
         )}
       </AnimatePresence>
 
-      {/* Batch result view */}
+      {/* Batch result view — Pro-only */}
       <AnimatePresence>
-        {showBatchResults && (batchStage === 'processing' || batchStage === 'complete') && (
+        {BATCH_UI_ENABLED && showBatchResults && (batchStage === 'processing' || batchStage === 'complete') && (
           <motion.div
             key="batch-results"
             initial={{ opacity: 0 }}

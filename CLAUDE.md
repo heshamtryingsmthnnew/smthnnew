@@ -282,8 +282,10 @@ The audit result is always labeled as an audit, never as verification.
 ## 8. Business Model
 
 ### Tiers
-- **Free:** 15 queries/day, no CAS, no advanced verification
-- **Pro:** $12/month — unlimited, CAS, advanced verification, history
+- **Free:** 15 queries/day, single-solve only, no CAS, no advanced verification,
+  no batch, no collections, no export
+- **Pro:** $12/month — unlimited single-solve, CAS, advanced verification,
+  full history, batch (up to 50/batch), collections, export
 
 ### Unit Economics
 - Cost per query: ~$0.004–0.005 (one Sonnet call, normalization embedded)
@@ -314,7 +316,11 @@ Pro is not limit removal only. The following are Pro-exclusive:
 - Step diagnostics (mismatch detail)
 - Collections (create, organize, auto-organize)
 - Export: PDF, LaTeX, Anki — single solve and collections
-- Batch solve up to 50 problems (free: 15)
+- Batch solve (up to 50 problems per batch). Free tier: single-solve only,
+  batch UI absent entirely. Reasoning: batch verification depends on CAS to
+  produce a workflow product; without CAS, batch produces mostly unverifiable
+  badges on the problem types the audience actually solves — a worse
+  experience than single-solve. See STRATEGIC_DECISIONS.md for full reasoning.
 - Full solve history
 
 ### Growth strategy
@@ -1100,9 +1106,10 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
   - /batch/solve: SSE stream, 3-parallel processing chunks. Each problem
     goes through solveOne() (model + normalization + verification + DB log).
     Per-problem events streamed: started / completed / failed.
-  - Server-authoritative caps: 15 problems/batch free, 50/batch Pro (Pro flag
-    check is permissive in v1, real gate in Phase 7). Per-problem quota
-    accounting against daily 15/day limit.
+  - Server-authoritative cap: 50 problems/batch. Batch is Pro-only — all /batch/*
+    endpoints return 403 unless the gate passes. Gate is env-driven (BATCH_DEV_ALLOW)
+    until Phase 6 ships Stripe and replaces it with a real Pro flag check.
+    Per-problem quota accounting against daily 15/day limit.
   - In-session async: tab close ends the job. beforeunload warning when
     batch is mid-flight.
   - Persistent sidebar progress indicator while batch runs.
@@ -1159,6 +1166,20 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     surgical fix ship as a separate brief after evidence is captured from a
     failing JPEG upload.
   - BUILD_VERSION: "v4.2.2-jpeg-diag"
+
+✅ Pre-5a — Batch Gating Correction ✅ COMPLETE
+  - Batch reclassified from quota-gated to Pro-only feature.
+  - Removed FREE_BATCH_CAP from both backend and frontend.
+  - Backend: isBatchAllowed() helper added. /batch/extract and /batch/solve
+    return 403 with "Batch solve requires Pro." unless BATCH_DEV_ALLOW=true.
+  - Frontend: BATCH_UI_ENABLED build-time constant
+    (NEXT_PUBLIC_SHOW_BATCH_UI === 'true'). Batch entry in mode-tabs row,
+    sidebar indicator, batch modal, and batch result view all wrapped in
+    the gate. Hidden entirely when gate is closed — not disabled, not
+    tooltipped, simply absent (same treatment as Export).
+  - .env.local and backend/.env updated with dev flags for local testing.
+  - Phase 6 will replace env gates with real Pro flag check on user record.
+  - BUILD_VERSION: "v4.3.0-batch-pro"
 
 🔲 Phase 5a — Session Model + Sidebar Restructure + Quick Wins
 
@@ -1229,6 +1250,12 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     but new solves still fire into the current session.
 
   Batch Entry + Result Panel Refactor (replaces Phase 5 full-screen overlay):
+  - All batch UI in this refactor inherits the Pro-only gate from the
+    Pre-5a Batch Gating Correction. The sidebar batch entry, secondary
+    expanding panel, and batch result rendering must all be wrapped in
+    the BATCH_UI_ENABLED check (or its Phase 6 isPro replacement).
+    Free users see no batch UI anywhere — same as Export, same as
+    Collections.
   - "Batch solve" entry: now in sidebar as noted in Quick Wins above.
   - Batch result view: full-screen overlay (Phase 5) is deleted entirely.
     Replaced by a secondary expanding panel.
@@ -1588,9 +1615,11 @@ Phase 5 — Batch Solve (new)
     batch_completed events. Each problem logged individually to solves table.
     req.on('close') cancels remaining work on disconnect.
   - Quota: getDailyUsage() counts solves rows in last 24h. Rejects batch if
-    remaining < problems.length. FREE_BATCH_CAP=15, PRO_BATCH_CAP=50.
-  - frontend: BatchProblem, BatchSummary, BatchModalStage types; FREE_BATCH_CAP
-    constant; batchStage, batchProblems, batchSummary and related state.
+    remaining < problems.length. PRO_BATCH_CAP=50 (FREE_BATCH_CAP removed).
+  - Batch is Pro-only: isBatchAllowed() returns 403 unless BATCH_DEV_ALLOW=true.
+  - frontend: BatchProblem, BatchSummary, BatchModalStage types; BATCH_UI_ENABLED
+    constant (NEXT_PUBLIC_SHOW_BATCH_UI==='true'); batchStage, batchProblems,
+    batchSummary and related state. All batch UI wrapped in BATCH_UI_ENABLED gate.
   - 3-stage batch modal (input → review → triggers processing + closes).
   - Sidebar batch indicator: processing (pulsing amber dot + "N/M done") or
     complete (colored dot + summary counts). Click opens result view.
@@ -1722,6 +1751,14 @@ Phase 4 — History + Library + Auth (new)
   resolved (promoted/deleted/kept-with-justification) and tracked in LOGGING_OBSERVATIONS.md
 - Create a separate Supabase project for events — same project as solves
 - Make events table user-readable via RLS — service_role only, internal observability
+- Expose batch UI to free users in any form — batch is Pro-only with absent
+  UI, same treatment as Export and Collections. Batch entry in the input bar,
+  sidebar indicator, batch modal, and batch result view all gated on
+  BATCH_UI_ENABLED (Phase 6 replaces this with isPro check)
+- Build batch endpoints that respond with anything other than 403 to
+  ungated requests — the frontend gate is convenience, the 403 is security
+- Reintroduce FREE_BATCH_CAP in any form — batch is Pro-only, no "free batch"
+  concept exists. PRO_BATCH_CAP=50 is the only cap.
 
 ---
 ## 11b. What Claude Code Must Always Do
@@ -1770,6 +1807,9 @@ Batch solves are individually-logged solves. There is no separate batch
 entity. The result view is rendered from the constituent solves at view time.
 
 Hard rules for batch UX:
+- Batch is Pro-only. Free tier: batch UI is absent entirely (not disabled,
+  not hidden via CSS, not rendered). Backend /batch/* endpoints return 403
+  for ungated requests.
 - Final answers NEVER appear in the summary view
 - Discrepancies are surfaced with focused navigation (open the result view
   on the discrepant problem)

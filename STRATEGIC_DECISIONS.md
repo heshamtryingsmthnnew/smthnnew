@@ -73,6 +73,79 @@ Two possible triggers:
 2. **If a user explicitly requests** workspace/project features more than twice, re-read this doc before dismissing it.
 
 ---
+## RESOLVED — Batch Solve Is Pro-Only
+
+**Status:** Decided. Not up for revisitation unless Phase 6+ usage data
+strongly contradicts it (specifically: high free-tier engagement with batch
+that converts to Pro).
+
+### Decision
+
+Batch solve is a Pro-only feature with UI absent on the free tier. Free
+tier is single-solve only. Same treatment as Export and Collections: not
+hidden, not disabled, not rendered.
+
+### Why this was decided
+
+The original Phase 5 design gated batch by quota (15 free / 50 Pro). That
+framing treated batch and single-solve as the same product feature with
+different volume limits. They are not.
+
+Batch without CAS produces an experience that is **worse than single-solve**
+on the problem types the target audience actually solves:
+
+- Single-solve forces engagement with each problem's verification badge
+  individually. Unavailable badges are honest, contextual, and paired with
+  a clear "Use Advanced Verification" suggestion. The unavailable state is
+  framed as a moment of choice, not a failure.
+- Batch renders 15 problems as a list. Approximately 12 carry unavailable
+  badges on a typical calculus problem set. The user's takeaway is "Ergo's
+  verification is mostly broken on the stuff I care about" — not "I should
+  upgrade for CAS." It is anti-marketing.
+
+The batch value proposition requires CAS to land. CAS covers derivatives,
+integrals, simplification, and Wolfram-queryable expressions — exactly the
+long tail of student problem sets where batch is useful. With CAS, badge
+distribution on a 15-problem set shifts to mostly verified or confirmed,
+and batch becomes a real workflow product. Without CAS, it is a list that
+makes the verification layer look broken.
+
+### What this means for future decisions
+
+- All batch UI surfaces (input bar entry, sidebar indicator, batch modal,
+  result panel, Phase 5a secondary expanding panel) are wrapped in a
+  single gate constant. Free tier sees none of it.
+- Phase 5a batch panel refactor inherits this gating automatically.
+- Phase 6 replaces the env-driven gate (BATCH_DEV_ALLOW backend,
+  NEXT_PUBLIC_SHOW_BATCH_UI frontend) with a real `user.is_pro === true`
+  check on the user record. No other code needs to change at that point.
+- SEO and onboarding content should reference batch as a Pro feature when
+  showcasing it. Free-tier marketing should focus on single-solve and the
+  verification layer, not "you get to try batch."
+
+### Trigger to revisit
+
+Unlikely to revisit. Possible triggers:
+
+1. **Post-Phase-6 conversion data shows batch is rarely a conversion driver.**
+   If Pro users barely use batch and free users never request it, the
+   architectural decision to gate it was correct but the marketing emphasis
+   should shift away from batch as a Pro value prop.
+2. **A "lite batch" mode without CAS becomes viable** — for example, if a
+   proprietary CAS ships (see OPEN QUESTION 3) and runs at near-zero
+   marginal cost, batch could become free-tier-viable because verification
+   coverage would no longer depend on Wolfram. Re-read this entry before
+   making that change.
+
+### How to apply if revisiting
+
+Re-read the reasoning above first. The "anti-marketing" risk is the load-
+bearing argument. If batch verification coverage on student problem sets
+exceeds ~70% verified-or-confirmed without Pro features, the argument
+weakens and reopening this decision becomes valid. Until then: locked.
+
+---
+
 ## RESOLVED — Audience
 
 **Status:** Decided. Not up for revisitation unless Phase 5 conversion data strongly contradicts it.

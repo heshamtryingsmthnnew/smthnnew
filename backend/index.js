@@ -20,7 +20,7 @@ const upload = multer({
   },
 });
 
-const BUILD_VERSION = "v4.2.2-jpeg-diag";
+const BUILD_VERSION = "v4.3.0-batch-pro";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
@@ -2727,6 +2727,9 @@ app.post('/auth/merge-session', async (req, res) => {
 
 // ---- /batch/extract — parse text or document into array of problems ----
 app.post('/batch/extract', async (req, res) => {
+  if (!isBatchAllowed(req)) {
+    return res.status(403).json({ error: 'Batch solve requires Pro.' });
+  }
   const { mode, input_type, text, document: docBase64, mimetype } = req.body;
 
   try {
@@ -2812,9 +2815,22 @@ app.post('/batch/extract', async (req, res) => {
 });
 
 // ---- /batch/solve — SSE streaming batch solve ----
-const FREE_BATCH_CAP = 15;
 const PRO_BATCH_CAP = 50;
 const DAILY_QUOTA = 15;
+
+/**
+ * Batch gate — returns true if the request is allowed to use batch endpoints.
+ *
+ * Phase 6 will replace this with a real Pro flag check on the user record.
+ * For now: dev env flag bypasses, all other requests rejected.
+ *
+ * Tested locally by setting BATCH_DEV_ALLOW=true in backend/.env.
+ */
+function isBatchAllowed(req) {
+  if (process.env.BATCH_DEV_ALLOW === 'true') return true;
+  // TODO Phase 6: replace with `return user?.is_pro === true;`
+  return false;
+}
 
 async function getDailyUsage(userId, sessionId) {
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -2827,6 +2843,9 @@ async function getDailyUsage(userId, sessionId) {
 }
 
 app.post('/batch/solve', async (req, res) => {
+  if (!isBatchAllowed(req)) {
+    return res.status(403).json({ error: 'Batch solve requires Pro.' });
+  }
   const { problems, mode } = req.body;
   if (!Array.isArray(problems) || problems.length === 0) {
     return res.status(400).json({ error: 'No problems provided' });
@@ -2837,12 +2856,9 @@ app.post('/batch/solve', async (req, res) => {
   const user = token ? getUserFromToken(token) : null;
   const sessionId = req.headers['x-session-id'] || null;
 
-  // Server-side cap
+  // Server-side cap — Pro users only past the gate above, so single cap applies
   if (problems.length > PRO_BATCH_CAP) {
     return res.status(400).json({ error: `Batch capped at ${PRO_BATCH_CAP} problems.` });
-  }
-  if (!user && problems.length > FREE_BATCH_CAP) {
-    return res.status(400).json({ error: `Free batch capped at ${FREE_BATCH_CAP} problems. Sign in for up to ${PRO_BATCH_CAP}.` });
   }
 
   // Quota check
