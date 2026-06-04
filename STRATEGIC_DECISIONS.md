@@ -73,6 +73,34 @@ Two possible triggers:
 2. **If a user explicitly requests** workspace/project features more than twice, re-read this doc before dismissing it.
 
 ---
+## RESOLVED — Sessions table reversal (Phase 5a)
+
+**Status:** Decided. Reverses the prior "no separate sessions table in v1" call.
+
+### Decision
+Sessions are first-class entities in a dedicated `sessions` table, not metadata
+derived from a session_id column on solves. See CLAUDE.md Section 9 + Pivot 10.
+
+### Why reversed
+The original derived model was locked before the rename endpoint and batch
+sessions (explicit names from filename/first-problem) were in scope. Three
+requirements then became mutually inconsistent under a derived model:
+1. Auto-naming computed from solves.
+2. A persisted user rename that overrides the auto name.
+3. Batch sessions with an explicit name that is never auto-derived.
+A `sessions` row with a `source` field ('auto' | 'renamed' | 'batch') holds all
+three without contradiction. The 4-hour clustering rule is unchanged in intent;
+it now runs in an atomic Postgres function (SELECT ... FOR UPDATE) instead of a
+JS-layer "most recent solve within 4h" query, which removes a real race under
+optimistic insert.
+
+### Downstream
+- Brief #3 builds the table, the FK, and the derivation function.
+- Naming-collision pre-step: the Phase 4 anonymous session_id must be
+  disambiguated from the new clustering session before the migration.
+- Future session sharing/export inherits this model with no further refactor.
+
+---
 ## RESOLVED — Batch Solve Is Pro-Only
 
 **Status:** Decided. Not up for revisitation unless Phase 6+ usage data
@@ -344,6 +372,27 @@ pain before adding manual controls. Manual session creation is the last resort.
 
 ---
 
+---
+## OPEN QUESTION 2 — additional revisit triggers (Phase 5a instrumentation)
+
+The 4-hour clustering rule is an unmeasured heuristic answer to the
+project-context question. Phase 5a ships four session event kinds (Section 17)
+to keep the 30-day data answerable. Concrete revisit triggers:
+
+- Users frequently return to old sessions to add new work
+  (high session.loaded_without_new_solve followed by new solves)
+  -> reconsider "continue this session".
+- Users rename sessions often (high session.renamed rate, esp. >20% in first
+  30 days) -> reconsider workspace identity and auto-naming.
+- Users access batch sessions repeatedly across days
+  -> reconsider batch-as-workspace.
+- session.cluster_boundary rarely fires (most solves land inside one window)
+  -> 4 hours may be too generous; tune SESSION_CLUSTER_HOURS down.
+
+Do not act on these before the 30-day trigger in OPEN QUESTION 1. Instrument now,
+decide later.
+
+---
 ## REVISION LOG
 
 - **Initial draft** — Logged after conversation about moving from "validated solver" to potential "workflow environment." Decided to defer all expansion decisions until post-Phase 5 conversion data exists.

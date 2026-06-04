@@ -140,6 +140,18 @@ ship before deployment. Rationale: the public's first exposure to Ergo
 should be the workflow product, not a single-feature version that would
 generate "neat, never came back" reactions. Deployment becomes Phase 6.
 
+### Pivot 10: Sessions promoted to first-class entities
+Phase 5a originally specced sessions as derived from a session_id column on
+the solves table, with no sessions table. **Changed:** sessions are now a
+real `sessions` table with id, owner, name, source, created_at, last_solve_at.
+Reason: the derived-from-solves model could not hold a persisted rename, an
+explicit batch-session name, and auto-naming at the same time without
+contradiction. An entity table resolves all three cleanly and is the natural
+model for future session sharing/export. The 4-hour clustering rule still
+decides which session a new solve attaches to — it now runs in an atomic
+Postgres function rather than a JS-layer query. Full reasoning in
+STRATEGIC_DECISIONS.md.
+
 ---
 
 ## 5. Layout Blueprint (Implemented)
@@ -1201,21 +1213,59 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     3-stage batch modal. No other behavior change.
 
   Session Data Model:
-  - Add session_id column to existing solves table. Do not create a
-    separate sessions table in v1 — derive all session metadata from
-    queries on this column.
-  - Session ID derivation: 4-hour clustering rule. A new solve gets
-    the session_id of the most recent solve by the same user within
-    the last 4 hours. If none exists, a new session_id is generated.
-    Threshold value must be defined as a named constant in code
-    (SESSION_CLUSTER_HOURS = 4) — configurable without a search/replace.
-  - Auto-naming: session name = first problem's kind + date.
-    Example: "Calculus, Nov 7". Stored as a derivable label, not a
-    separate DB column in v1 (compute from first solve in session).
-  - PATCH /sessions/:id/rename endpoint: updates the session name for
-    all solves sharing that session_id. Requires auth JWT.
-  - /history/list updated: returns solves grouped by session_id with
-    session metadata (name, solve count, last_updated).
+  - Sessions are FIRST-CLASS ENTITIES. Create a dedicated `sessions` table.
+    This REVERSES the earlier "no separate sessions table in v1" decision —
+    see Pivot 10 and STRATEGIC_DECISIONS.md "Sessions table reversal".
+    Reason: rename persistence + batch sessions with explicit names + auto
+    naming cannot coexist cleanly in a derived-from-solves model. An entity
+    table is the correct model and the one that handles rename today and
+    sharing/export later without refactor.
+  - sessions schema:
+      id            uuid pk
+      owner_key     identifies owner — authenticated user_id when signed in,
+                    else the anonymous browser key. See NAMING COLLISION note.
+      name          text
+      source        'auto' | 'renamed' | 'batch'
+      created_at    timestamptz
+      last_solve_at timestamptz
+    solves table: add cluster_session_id (FK -> sessions.id). See NAMING
+    COLLISION note before writing the migration.
+  - session derivation runs in a Postgres function
+    get_or_create_active_session(owner_key, now, cluster_hours), called from
+    insertSolve(). Uses SELECT ... FOR UPDATE to serialize concurrent inserts.
+    Logic: find the owner's most recent session with last_solve_at within
+    cluster_hours; if found, update its last_solve_at and return its id; else
+    insert a new session row and return the new id. Atomic by construction —
+    eliminates the race where two near-simultaneous solves (double-click,
+    retry, second tab) each create a separate session because the optimistic
+    row lives only in frontend state and is invisible to a JS-layer lookup.
+  - SESSION_CLUSTER_HOURS = 4. Canonical value lives in backend config and is
+    passed into the Postgres function as a parameter — never hardcoded inline
+    in the SQL. Tunable in one place.
+  - Auto-naming: session name = DOMINANT problem_kind across the session + date
+    (e.g. "Calculus, Nov 7"), NOT first-problem kind. Recomputed on each insert
+    by the derivation path, written to sessions.name ONLY while source='auto'.
+    A user rename sets source='renamed' and the name is never auto-overwritten
+    after that. Batch sessions are created with source='batch' and an explicit
+    name (see Batch Entry block) and are never auto-renamed.
+  - PATCH /sessions/:id/rename: sets sessions.name and source='renamed'.
+    Requires auth JWT (authenticated) or matching anonymous owner_key.
+  - /history/list updated: returns sessions with their solves nested, plus
+    session metadata (name, solve count, last_solve_at) read directly from
+    the sessions table.
+
+  NAMING COLLISION — resolve before Brief #3 writes the migration:
+  - The Phase 4 anonymous flow and /auth/merge-session already use a column
+    named session_id on solves to mean the ANONYMOUS BROWSER session
+    (sessionStorage anon_${uuid}, 24h merge window). The Phase 5a clustering
+    session is a DIFFERENT concept. Do not overload one column for both.
+  - Brief #3 must first verify the actual current schema, then disambiguate:
+    recommended — keep the anonymous identifier as anon_session_id (rename the
+    existing column if it is currently session_id) and use cluster_session_id
+    for the new FK. Confirm the exact rename against the live schema and update
+    /auth/merge-session accordingly. This is a blocking pre-step for Brief #3.
+  - Four session event kinds (see Section 17) are registered now and
+    instrumented by Brief #3.
 
   Sidebar Restructure + Optimistic Insert (ship as one unit — coupled):
   - Three-level hierarchy: time bucket > session > problem.
@@ -1243,8 +1293,18 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
 
   Top-Center Session Tab:
   - See Section 5 (Layout Blueprint) for full visual spec.
-  - State management: one source of truth shared between the session tab
-    and the sidebar. Same state object drives both surfaces.
+  - State management: a SINGLE useReducer is the one source of truth for
+    sidebar + session tab + history + batch-panel state. No parallel
+    useState shape. The reducer MUST model two distinct concepts as separate
+    fields:
+      activeSession    — where new solves attach (current 4-hour cluster,
+                         server-derived). Never changed by loading old work.
+      displayedSession — what the workspace is currently rendering (may be a
+                         historical session loaded from the sidebar).
+    The load-old-then-solve-new transition (Section 5 microcopy) is the
+    state change from displayedSession=old to displayedSession=active when a
+    new solve fires; it is a reducer event, not a useEffect chain. The reducer
+    shape is reviewed and locked in chat before Brief #4 is written.
   - Session tab reflects the active session (current 4-hour window).
     When user loads an old solve, tab shows that solve's session name
     but new solves still fire into the current session.
@@ -2017,6 +2077,9 @@ Current kinds:
 - Extract: extract.no_problems_found, extract.unsupported_mimetype, extract.exception
 - Batch: batch.problem_failed, batch.extract_failed
 - Auth/history: auth.merge_failed, history.revalidation_failed
+- Session (Phase 5a — registered now, instrumented in Brief #3):
+  session.renamed, session.loaded_without_new_solve,
+  session.cross_kind_first_problem, session.cluster_boundary
 - Frontend: frontend.katex_render_fail, frontend.desmos_init_fail, frontend.sse_stream_break
 - Debug: debug.observation (testing-phase only, must be removed before Phase 6)
 

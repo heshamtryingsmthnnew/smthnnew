@@ -31,6 +31,12 @@ const EVENT_KINDS = Object.freeze({
   'auth.merge_failed':          'Anonymous session merge into authenticated user failed',
   'history.revalidation_failed': 'Lazy Tier 1 revalidation threw',
 
+  // Session (Phase 5a — registered now, call sites added in Brief #3)
+  'session.renamed':                  'User renamed a session (source -> renamed). Measures auto-name accuracy.',
+  'session.loaded_without_new_solve': 'User opened an old session but fired no new solve. Browsing vs continuing — OPEN QUESTION 2 signal.',
+  'session.cross_kind_first_problem': 'Session first problem_kind differs from the dominant kind. Workflow-mix signal.',
+  'session.cluster_boundary':         'New solve created a new session because the prior solve fell outside SESSION_CLUSTER_HOURS. Measures whether 4h is the binding threshold.',
+
   // Frontend (registered now, instrumented in a future commit)
   'frontend.katex_render_fail': 'KaTeXBoundary tripped — invalid LaTeX rendered',
   'frontend.desmos_init_fail':  'Desmos calculator failed to initialize',
