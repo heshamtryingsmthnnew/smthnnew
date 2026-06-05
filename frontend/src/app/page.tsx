@@ -161,13 +161,23 @@ const WEDGE_MESSAGES = [
   'Finalising verdict...',
 ];
 
-// Accepted file types per surface — validated by acquireFile
+// Accepted file types per surface — validated by acquireFile.
+// Entries ending with '/' are prefix-matched (e.g. 'image/' matches any image/*).
+// Entries without a trailing '/' are exact-matched.
 const COMPOSER_ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const BATCH_ACCEPTED_TYPES = [
-  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+  'image/',  // prefix: matches image/png, image/jpeg, image/gif, image/webp, image/x-png, etc.
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ];
+
+// Returns true when a MIME type matches an entry in the accepted list.
+// Entries ending in '/' are prefix-matched; all others are exact-matched.
+function typeMatches(mimeType: string, acceptedTypes: string[]): boolean {
+  return acceptedTypes.some((t) =>
+    t.endsWith('/') ? mimeType.startsWith(t) : mimeType === t
+  );
+}
 
 // Shared file acquisition + validation helper.
 // Extracts a File from a direct File reference, ClipboardEvent, or DragEvent,
@@ -194,7 +204,7 @@ function acquireFile(
     const items = source.clipboardData?.items;
     if (!items) return;
     for (const item of Array.from(items)) {
-      if (acceptedTypes.some((t) => item.type === t)) {
+      if (typeMatches(item.type, acceptedTypes)) {
         file = item.getAsFile();
         break;
       }
@@ -202,13 +212,13 @@ function acquireFile(
     if (!file) return; // no matching file in clipboard — let paste through normally
   } else if ('dataTransfer' in source) {
     const files = Array.from(source.dataTransfer.files);
-    file = files.find((f) => acceptedTypes.some((t) => f.type === t)) ?? null;
+    file = files.find((f) => typeMatches(f.type, acceptedTypes)) ?? null;
     if (!file) return; // no matching file in drop
   }
 
   if (!file) return;
 
-  if (!acceptedTypes.some((t) => file!.type === t)) {
+  if (!typeMatches(file.type, acceptedTypes)) {
     onError('Unsupported file type.');
     return;
   }

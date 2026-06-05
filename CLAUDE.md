@@ -1212,6 +1212,11 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     modal. Batch progress indicator and result view untouched (Brief #6).
   - Frontend only. No backend/session/prompt/verification changes.
   - BUILD_VERSION: "v4.4.0-quick-wins"
+  - Fix (v4.4.1-batch-image-fix): BATCH_ACCEPTED_TYPES was rejecting image/png
+    (matching-semantics mismatch with the composer list); aligned batch image
+    matching to the composer's approach. acquireFile now supports prefix entries
+    (types ending in '/') for robust image/* matching. PNG/JPEG/GIF/WEBP + PDF +
+    DOCX now accepted on the batch surface.
 
 🔲 Phase 5a — Session Model + Sidebar Restructure
 
@@ -1683,7 +1688,11 @@ Frontend (/frontend/src/app/page.tsx)
     top-level sidebar nav item below Home, gated on BATCH_UI_ENABLED,
     icon-only when collapsed. Stacked-layers SVG icon.
   - batchIsDraggingOver state added for batch drop zone visual feedback.
-  - BUILD_VERSION: "v4.4.0-quick-wins"
+  - acquireFile: supports prefix entries ending in '/' (e.g. 'image/' matches
+    image/png, image/jpeg, image/x-png, etc.). BATCH_ACCEPTED_TYPES uses
+    'image/' prefix for the image category; COMPOSER_ACCEPTED_TYPES unchanged
+    (exact MIME strings). typeMatches() helper handles both semantics.
+  - BUILD_VERSION: "v4.4.1-batch-image-fix"
 
 Phase 5 — Batch Solve (new)
   - backend: solveOne(rawInput, mode) standalone async function — full solve
