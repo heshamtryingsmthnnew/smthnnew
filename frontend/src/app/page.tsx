@@ -2489,7 +2489,7 @@ export default function Home() {
                 const items = e.clipboardData?.items;
                 if (!items) return;
                 const hasBatchFile = Array.from(items).some((item) =>
-                  BATCH_ACCEPTED_TYPES.some((t) => item.type === t)
+                  typeMatches(item.type, BATCH_ACCEPTED_TYPES)
                 );
                 if (hasBatchFile) {
                   e.preventDefault();
