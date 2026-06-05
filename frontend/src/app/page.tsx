@@ -161,6 +161,61 @@ const WEDGE_MESSAGES = [
   'Finalising verdict...',
 ];
 
+// Accepted file types per surface — validated by acquireFile
+const COMPOSER_ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const BATCH_ACCEPTED_TYPES = [
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+];
+
+// Shared file acquisition + validation helper.
+// Extracts a File from a direct File reference, ClipboardEvent, or DragEvent,
+// validates its MIME type against acceptedTypes, then calls onValid or onError.
+// Returns silently (no error) when no file of an accepted type is found in an event —
+// this preserves normal paste/drop behaviour when the event contains no matching file.
+function acquireFile(
+  source: File | React.ClipboardEvent<HTMLElement> | React.DragEvent<HTMLElement>,
+  {
+    acceptedTypes,
+    onValid,
+    onError,
+  }: {
+    acceptedTypes: string[];
+    onValid: (file: File) => void;
+    onError: (msg: string) => void;
+  }
+): void {
+  let file: File | null = null;
+
+  if (source instanceof File) {
+    file = source;
+  } else if ('clipboardData' in source) {
+    const items = source.clipboardData?.items;
+    if (!items) return;
+    for (const item of Array.from(items)) {
+      if (acceptedTypes.some((t) => item.type === t)) {
+        file = item.getAsFile();
+        break;
+      }
+    }
+    if (!file) return; // no matching file in clipboard — let paste through normally
+  } else if ('dataTransfer' in source) {
+    const files = Array.from(source.dataTransfer.files);
+    file = files.find((f) => acceptedTypes.some((t) => f.type === t)) ?? null;
+    if (!file) return; // no matching file in drop
+  }
+
+  if (!file) return;
+
+  if (!acceptedTypes.some((t) => file!.type === t)) {
+    onError('Unsupported file type.');
+    return;
+  }
+
+  onValid(file);
+}
+
 function getBadgeLabel(badge: Artifact['verification']['badge']) {
   switch (badge) {
     case 'verified':
@@ -384,6 +439,7 @@ export default function Home() {
   const [batchSummary, setBatchSummary] = useState<BatchSummary | null>(null);
   const [batchExpandedIndex, setBatchExpandedIndex] = useState<number | null>(null);
   const [showBatchResults, setShowBatchResults] = useState(false);
+  const [batchIsDraggingOver, setBatchIsDraggingOver] = useState(false);
   const sidebarWidth = sidebarOpen ? 240 : 56;
   const contentOffset = sidebarWidth / 2;
 
@@ -627,6 +683,14 @@ export default function Home() {
   };
 
   const closeBatchModal = () => setBatchStage('idle');
+
+  // Shared onValid callback for batch file acquisition — switches to document mode
+  // and stores the validated file regardless of whether text/document tab is active.
+  const handleBatchFileAcquired = (file: File) => {
+    setBatchFile(file);
+    setBatchInputType('document');
+    setBatchExtractError(null);
+  };
 
   const handleBatchExtract = async () => {
     if (batchInputType === 'text' && !batchText.trim()) return;
@@ -881,12 +945,6 @@ export default function Home() {
   };
 
   const handleImageFile = async (file: File) => {
-    const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    if (!allowed.includes(file.type)) {
-      setExtractError('Unsupported image type. Use JPEG, PNG, GIF, or WebP.');
-      return;
-    }
-
     setImageExtracting(true);
     setExtractedProblems(null);
     setExtractError(null);
@@ -916,11 +974,15 @@ export default function Home() {
     }
   };
 
-  const handleImageUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = '';
-    await handleImageFile(file);
+    acquireFile(file, {
+      acceptedTypes: COMPOSER_ACCEPTED_TYPES,
+      onValid: handleImageFile,
+      onError: (msg) => setExtractError(msg),
+    });
   };
 
   const scrollToComposer = () => {
@@ -1221,6 +1283,21 @@ export default function Home() {
             </svg>
             {sidebarOpen && <span>Home</span>}
           </button>
+
+          {BATCH_UI_ENABLED && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); openBatchModal(); }}
+              className={`flex w-full items-center rounded-md py-2 text-[14px] text-zinc-300 transition-colors hover:bg-white/[0.03] hover:text-zinc-100 ${sidebarOpen ? 'gap-3 px-3' : 'justify-center px-0'}`}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="12 2 2 7 12 12 22 7 12 2" />
+                <polyline points="2 17 12 22 22 17" />
+                <polyline points="2 12 12 17 22 12" />
+              </svg>
+              {sidebarOpen && <span>Batch solve</span>}
+            </button>
+          )}
         </div>
 
         {sidebarOpen && <div className="my-4 border-t border-white/[0.08]" />}
@@ -2060,19 +2137,6 @@ export default function Home() {
               Physics
             </button>
 
-            {BATCH_UI_ENABLED && (
-              <>
-                <span className="text-zinc-700">·</span>
-                <button
-                  type="button"
-                  onClick={openBatchModal}
-                  disabled={loading}
-                  className="pb-1 text-sm text-zinc-600 transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Batch solve
-                </button>
-              </>
-            )}
           </div>
 
           {/* Interactive tab */}
@@ -2130,10 +2194,11 @@ export default function Home() {
             onDrop={(e) => {
               e.preventDefault();
               setIsDraggingOver(false);
-              const file = Array.from(e.dataTransfer.files).find(f =>
-                f.type.startsWith('image/')
-              );
-              if (file) handleImageFile(file);
+              acquireFile(e, {
+                acceptedTypes: COMPOSER_ACCEPTED_TYPES,
+                onValid: handleImageFile,
+                onError: (msg) => setExtractError(msg),
+              });
             }}
           >
             {/* Drop zone overlay */}
@@ -2185,13 +2250,16 @@ export default function Home() {
                 onPaste={(e) => {
                   const items = e.clipboardData?.items;
                   if (!items) return;
-                  for (const item of Array.from(items)) {
-                    if (item.type.startsWith('image/')) {
-                      e.preventDefault();
-                      const file = item.getAsFile();
-                      if (file) handleImageFile(file);
-                      return;
-                    }
+                  const hasImage = Array.from(items).some((item) =>
+                    COMPOSER_ACCEPTED_TYPES.some((t) => item.type === t)
+                  );
+                  if (hasImage) {
+                    e.preventDefault();
+                    acquireFile(e, {
+                      acceptedTypes: COMPOSER_ACCEPTED_TYPES,
+                      onValid: handleImageFile,
+                      onError: (msg) => setExtractError(msg),
+                    });
                   }
                 }}
                 disabled={loading}
@@ -2396,7 +2464,7 @@ export default function Home() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-black/70 backdrop-blur-sm pt-16 pb-8"
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm"
             onClick={() => setBatchStage('idle')}
           >
             <motion.div
@@ -2405,8 +2473,23 @@ export default function Home() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -12 }}
               transition={{ duration: 0.15 }}
-              className="w-full max-w-2xl rounded-xl border border-white/[0.08] bg-zinc-950 shadow-2xl"
+              className="w-full max-w-[640px] max-h-[85vh] flex flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-zinc-950 shadow-2xl"
               onClick={(e) => e.stopPropagation()}
+              onPaste={(e) => {
+                const items = e.clipboardData?.items;
+                if (!items) return;
+                const hasBatchFile = Array.from(items).some((item) =>
+                  BATCH_ACCEPTED_TYPES.some((t) => item.type === t)
+                );
+                if (hasBatchFile) {
+                  e.preventDefault();
+                  acquireFile(e, {
+                    acceptedTypes: BATCH_ACCEPTED_TYPES,
+                    onValid: handleBatchFileAcquired,
+                    onError: (msg) => setBatchExtractError(msg),
+                  });
+                }
+              }}
             >
               {/* Header */}
               <div className="flex items-center justify-between border-b border-white/[0.06] px-6 py-4">
@@ -2427,7 +2510,7 @@ export default function Home() {
 
               {/* Stage 1: Input */}
               {batchStage === 'input' && (
-                <div className="p-6">
+                <div className="flex-1 overflow-y-auto p-6">
                   {/* Mode + Input type selectors */}
                   <div className="mb-4 flex items-center gap-4">
                     <div className="flex gap-2">
@@ -2458,16 +2541,46 @@ export default function Home() {
                     />
                   ) : (
                     <div
-                      className="flex h-32 cursor-pointer flex-col items-center justify-center rounded-md border border-dashed border-white/[0.12] bg-white/[0.02] transition-colors hover:border-white/20"
+                      className={`flex h-32 cursor-pointer flex-col items-center justify-center rounded-md border border-dashed transition-colors ${batchIsDraggingOver ? 'border-white/30 bg-white/[0.04]' : 'border-white/[0.12] bg-white/[0.02] hover:border-white/20'}`}
                       onClick={() => document.getElementById('batch-file-input')?.click()}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (Array.from(e.dataTransfer.types).includes('Files')) setBatchIsDraggingOver(true);
+                      }}
+                      onDragLeave={(e) => {
+                        if (!e.currentTarget.contains(e.relatedTarget as Node)) setBatchIsDraggingOver(false);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setBatchIsDraggingOver(false);
+                        acquireFile(e, {
+                          acceptedTypes: BATCH_ACCEPTED_TYPES,
+                          onValid: handleBatchFileAcquired,
+                          onError: (msg) => setBatchExtractError(msg),
+                        });
+                      }}
                     >
-                      <input id="batch-file-input" type="file" accept=".pdf,.docx,.jpg,.jpeg,.png,.webp" className="hidden"
-                        onChange={e => setBatchFile(e.target.files?.[0] || null)} />
+                      <input
+                        id="batch-file-input"
+                        type="file"
+                        accept=".pdf,.docx,.jpg,.jpeg,.png,.webp"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          e.target.value = '';
+                          acquireFile(file, {
+                            acceptedTypes: BATCH_ACCEPTED_TYPES,
+                            onValid: handleBatchFileAcquired,
+                            onError: (msg) => setBatchExtractError(msg),
+                          });
+                        }}
+                      />
                       {batchFile ? (
                         <p className="text-[13px] text-zinc-300">{batchFile.name}</p>
                       ) : (
                         <>
-                          <p className="text-[13px] text-zinc-400">Click to select file</p>
+                          <p className="text-[13px] text-zinc-400">Click or drop file here</p>
                           <p className="mt-1 text-[11px] text-zinc-600">PDF, DOCX, or image</p>
                         </>
                       )}
@@ -2489,9 +2602,9 @@ export default function Home() {
 
               {/* Stage 2: Review */}
               {batchStage === 'review' && (
-                <div className="p-6">
+                <div className="flex flex-1 flex-col min-h-0 overflow-hidden p-6">
                   {/* Counter */}
-                  <div className="mb-3 flex items-center justify-between">
+                  <div className="mb-3 flex flex-shrink-0 items-center justify-between">
                     <span className={`text-[12px] font-medium ${
                       batchDraftProblems.length >= 50 ? 'text-red-400' :
                       batchDraftProblems.length >= 47 ? 'text-amber-400' :
@@ -2502,7 +2615,7 @@ export default function Home() {
                     <button type="button" onClick={() => setBatchStage('input')} className="text-[12px] text-zinc-600 hover:text-zinc-300">← Back</button>
                   </div>
 
-                  <div className="max-h-[400px] space-y-2 overflow-y-auto">
+                  <div className="flex-1 min-h-0 overflow-y-auto space-y-2">
                     {batchDraftProblems.map((prob, i) => (
                       <div key={i} className="flex gap-2">
                         <span className="mt-2.5 w-5 flex-shrink-0 text-center text-[11px] text-zinc-600">{i + 1}</span>
@@ -2523,15 +2636,15 @@ export default function Home() {
                   </div>
 
                   <button type="button" onClick={() => setBatchDraftProblems(prev => [...prev, ''])}
-                    className="mt-3 text-[12px] text-zinc-600 hover:text-zinc-300">
+                    className="mt-3 flex-shrink-0 text-[12px] text-zinc-600 hover:text-zinc-300">
                     + Add problem
                   </button>
 
                   {batchExtractError && (
-                    <p className="mt-3 text-[12px] text-amber-400">{batchExtractError}</p>
+                    <p className="mt-3 flex-shrink-0 text-[12px] text-amber-400">{batchExtractError}</p>
                   )}
 
-                  <div className="mt-4 flex justify-end">
+                  <div className="mt-4 flex flex-shrink-0 justify-end">
                     <button type="button" onClick={startBatchSolve}
                       disabled={batchDraftProblems.filter(p => p.trim()).length === 0 || batchDraftProblems.filter(p => p.trim()).length > 50}
                       className="rounded-md bg-white px-5 py-2 text-[14px] font-medium text-zinc-950 transition hover:bg-zinc-100 disabled:opacity-40">

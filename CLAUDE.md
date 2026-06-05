@@ -1193,24 +1193,33 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
   - Phase 6 will replace env gates with real Pro flag check on user record.
   - BUILD_VERSION: "v4.3.0-batch-pro"
 
-🔲 Phase 5a — Session Model + Sidebar Restructure + Quick Wins
+✅ Phase 5a — Quick Wins ✅ COMPLETE
+  - Shared image-file acquisition/validation helper: main composer and batch
+    modal Input stage now share one source of truth for file acquisition +
+    type validation. Batch modal gained paste + drag-drop (previously file
+    input only). Endpoints unchanged — composer → /extract-problem,
+    batch → /batch/extract. Accepted types parameterized (composer: image;
+    batch: PDF/DOCX/image). acquireFile() helper extracted as a module-level
+    function; handleImageFile() type-check removed (validation now in acquireFile).
+    Full refactor path taken — composer's onPaste, onDrop, and handleImageUpload
+    all route through acquireFile.
+  - Batch modal centered both axes, max-w-[640px], max-h-[85vh], Review-stage
+    list scrolls internally (flex-1 min-h-0 overflow-y-auto). 3-stage flow
+    unchanged.
+  - "Batch solve" entry removed from input composer mode-tabs row; added as a
+    top-level sidebar nav item below Home (stacked-layers icon), gated on
+    BATCH_UI_ENABLED, icon-only when sidebar collapsed. Opens the same 3-stage
+    modal. Batch progress indicator and result view untouched (Brief #6).
+  - Frontend only. No backend/session/prompt/verification changes.
+  - BUILD_VERSION: "v4.4.0-quick-wins"
 
-  JPEG Extraction Bug — diagnose before any code change:
-  - Pull actual error output from /extract-problem logs first.
-  - Do not write a fix blind. Candidates: Anthropic vision API rejection
-    of JPEG format, multer memory buffer issue losing file data, model
-    returning mode: none for valid images, 10MB size limit hit.
-  - Identify root cause from log evidence, then fix surgically.
+🔲 Phase 5a — Session Model + Sidebar Restructure
 
-  Quick Wins (independent, no dependencies):
-  - Batch modal: center it and increase size. Pure CSS/layout tuning.
-  - Shared handleImageFile: already extracted in Polish Brief 08 for
-    main composer. Extend to wire into: batch modal file input,
-    batch modal drop zone, batch modal paste handler. Single source
-    of truth. No logic duplication.
-  - "Batch solve" entry: remove from input bar area. Add to sidebar
-    at same level as Sessions / Profile / Settings. Click opens the
-    3-stage batch modal. No other behavior change.
+  JPEG Extraction Bug — RESOLVED (no recurrence):
+  - events table queried for debug.observation tagged jpeg_bug_2026_05:
+    zero rows. Bug did not recur during testing. No fix needed.
+  - Diagnostic instrumentation retained for passive monitoring; resolved
+    (promoted/kept/deleted) in the pre-Phase-6 debug.observation sweep.
 
   Session Data Model:
   - Sessions are FIRST-CLASS ENTITIES. Create a dedicated `sessions` table.
@@ -1661,6 +1670,20 @@ Frontend (/frontend/src/app/page.tsx)
     to sit below the session tab strip. Solution view pt-20 required.
     Do not implement this sticky bar shift in isolation — it ships as part
     of Phase 5a alongside the session tab.
+  - Image-file handling: shared acquireFile() helper (module-level function)
+    used by both the main composer and the batch modal Input stage
+    (paste/drop/input). Endpoints remain distinct (/extract-problem vs
+    /batch/extract); accepted types parameterized per surface via
+    COMPOSER_ACCEPTED_TYPES and BATCH_ACCEPTED_TYPES constants.
+    handleImageFile() no longer performs type validation (moved to acquireFile).
+  - Batch modal: centered both axes, max-w-[640px], max-h-[85vh], Review-stage
+    list uses flex-1 min-h-0 overflow-y-auto for internal scroll. Header +
+    footer pinned via flex-shrink-0.
+  - "Batch solve" entry relocated from input composer mode-tabs row to a
+    top-level sidebar nav item below Home, gated on BATCH_UI_ENABLED,
+    icon-only when collapsed. Stacked-layers SVG icon.
+  - batchIsDraggingOver state added for batch drop zone visual feedback.
+  - BUILD_VERSION: "v4.4.0-quick-wins"
 
 Phase 5 — Batch Solve (new)
   - backend: solveOne(rawInput, mode) standalone async function — full solve
@@ -1691,6 +1714,7 @@ Phase 5 — Batch Solve (new)
     batch result panel spec. Full-screen overlay is deleted in Phase 5a.
   - beforeunload warning while batchStage === 'processing'.
   - "Batch solve" text link between Physics tab and mode tabs row.
+    NOTE: Moved to sidebar nav in Phase 5a Quick Wins. No longer in mode-tabs row.
 
 Phase 4 — History + Library + Auth (new)
   - backend/supabase.js: Supabase service_role client. insertSolve(),
