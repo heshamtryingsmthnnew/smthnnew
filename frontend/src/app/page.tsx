@@ -713,7 +713,10 @@ export default function Home() {
         body.text = batchText;
       } else if (batchFile) {
         const arrayBuf = await batchFile.arrayBuffer();
-        const b64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuf)));
+        const bytes = new Uint8Array(arrayBuf);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        const b64 = btoa(binary);
         body = { ...body, document: b64, mimetype: batchFile.type };
       }
       const res = await axios.post(`${API_URL}/batch/extract`, body);
