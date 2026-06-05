@@ -708,18 +708,14 @@ export default function Home() {
     setBatchExtracting(true);
     setBatchExtractError(null);
     try {
-      let body: Record<string, unknown> = { mode: batchMode, input_type: batchInputType };
+      const formData = new FormData();
+      formData.append('mode', batchMode);
       if (batchInputType === 'text') {
-        body.text = batchText;
+        formData.append('text', batchText);
       } else if (batchFile) {
-        const arrayBuf = await batchFile.arrayBuffer();
-        const bytes = new Uint8Array(arrayBuf);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        const b64 = btoa(binary);
-        body = { ...body, document: b64, mimetype: batchFile.type };
+        formData.append('file', batchFile);
       }
-      const res = await axios.post(`${API_URL}/batch/extract`, body);
+      const res = await axios.post(`${API_URL}/batch/extract`, formData);
       const problems: string[] = res.data.problems || [];
       if (problems.length === 0) {
         setBatchExtractError('No problems found. Try pasting the text directly.');

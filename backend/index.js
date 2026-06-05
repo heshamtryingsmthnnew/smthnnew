@@ -20,7 +20,21 @@ const upload = multer({
   },
 });
 
-const BUILD_VERSION = "v4.4.1-batch-image-fix";
+const batchUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/msword',
+    ];
+    cb(null, allowed.includes(file.mimetype));
+  },
+});
+
+const BUILD_VERSION = "v4.4.2-batch-image-transport";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
@@ -2726,20 +2740,19 @@ app.post('/auth/merge-session', async (req, res) => {
 });
 
 // ---- /batch/extract — parse text or document into array of problems ----
-app.post('/batch/extract', async (req, res) => {
+app.post('/batch/extract', batchUpload.single('file'), async (req, res) => {
   if (!isBatchAllowed(req)) {
     return res.status(403).json({ error: 'Batch solve requires Pro.' });
   }
-  const { mode, input_type, text, document: docBase64, mimetype } = req.body;
+  const { mode, text } = req.body;
+  const file = req.file;
 
   try {
     let sourceText = '';
 
-    if (input_type === 'text') {
-      sourceText = text || '';
-    } else if (input_type === 'document') {
-      if (!docBase64) return res.status(400).json({ error: 'No document provided' });
-      const buf = Buffer.from(docBase64, 'base64');
+    if (file) {
+      const mimetype = file.mimetype;
+      const buf = file.buffer;
 
       if (mimetype === 'application/pdf') {
         const pdfParse = require('pdf-parse');
@@ -2750,14 +2763,13 @@ app.post('/batch/extract', async (req, res) => {
         const mammoth = require('mammoth');
         const result = await mammoth.extractRawText({ buffer: buf });
         sourceText = result.value || '';
-      } else if (mimetype && mimetype.startsWith('image/')) {
-        // Vision extraction — reuse image path
-        const safeMediaType = mimetype;
+      } else if (mimetype.startsWith('image/')) {
+        const b64 = buf.toString('base64');
         const message = await client.messages.create({
           model: 'claude-haiku-4-5-20251001',
           max_tokens: 1024,
           system: 'You are a math problem extractor. Extract all math/physics problems from the image as a JSON array of strings. Return ONLY the JSON array, no other text.',
-          messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: safeMediaType, data: docBase64 } }] }],
+          messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: mimetype, data: b64 } }] }],
         });
         const raw = message.content[0].text?.trim() || '[]';
         try {
@@ -2769,8 +2781,10 @@ app.post('/batch/extract', async (req, res) => {
       } else {
         return res.status(400).json({ error: 'Unsupported document type' });
       }
+    } else if (text) {
+      sourceText = text;
     } else {
-      return res.status(400).json({ error: 'Invalid input_type' });
+      return res.status(400).json({ error: 'No file or text provided' });
     }
 
     if (!sourceText.trim()) return res.json({ problems: [], truncated: false });

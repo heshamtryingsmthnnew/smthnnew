@@ -1217,6 +1217,12 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     matching to the composer's approach. acquireFile now supports prefix entries
     (types ending in '/') for robust image/* matching. PNG/JPEG/GIF/WEBP + PDF +
     DOCX now accepted on the batch surface.
+  - Fix (v4.4.2-batch-image-transport): batch file upload switched from
+    base64-in-JSON to multipart/form-data via multer (10MB), matching
+    /extract-problem. Root cause of the PNG failures was payload size, not format
+    — base64-in-JSON exceeded body-parser limits for larger files (large PNGs);
+    small JPEGs slipped under. Client-side base64 (btoa loop) removed. Text and
+    PDF/DOCX batch paths preserved. Transport now unified with the composer.
 
 🔲 Phase 5a — Session Model + Sidebar Restructure
 
@@ -1692,7 +1698,12 @@ Frontend (/frontend/src/app/page.tsx)
     image/png, image/jpeg, image/x-png, etc.). BATCH_ACCEPTED_TYPES uses
     'image/' prefix for the image category; COMPOSER_ACCEPTED_TYPES unchanged
     (exact MIME strings). typeMatches() helper handles both semantics.
-  - BUILD_VERSION: "v4.4.1-batch-image-fix"
+  - /batch/extract: switched from base64-in-JSON to multipart/form-data via
+    batchUpload multer instance (10MB, accepts images + PDF + DOCX). Frontend
+    uses FormData — no base64 encoding. text input appended as form field.
+    Backend reads req.file.buffer and req.file.mimetype. Image path does
+    buf.toString('base64') server-side for the Claude vision call.
+  - BUILD_VERSION: "v4.4.2-batch-image-transport"
 
 Phase 5 — Batch Solve (new)
   - backend: solveOne(rawInput, mode) standalone async function — full solve
