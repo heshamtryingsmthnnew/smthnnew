@@ -34,7 +34,7 @@ const batchUpload = multer({
   },
 });
 
-const BUILD_VERSION = "v4.5.0-session-model";
+const BUILD_VERSION = "v4.6.0-sidebar-optimistic";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
@@ -2146,6 +2146,8 @@ Mode: physics`;
       correlation_id: correlationId,
       solve_id: solveRow?.id || null,
       cluster_session_id: solveRow?.cluster_session_id || null,
+      created_at: solveRow?.created_at || null,
+      session: solveRow?.session || null,
       answer,
       verificationStatus: verification.status,
       verificationDetails: verification.details || verification.meta || null,
@@ -3111,6 +3113,34 @@ app.post('/batch/solve', async (req, res) => {
     send({ type: 'batch_completed', summary });
   }
   res.end();
+});
+
+// ---- POST /events — frontend event logging (fire-and-forget; never blocks caller) ----
+// Accepts frontend-originated events (frontend.*, session.loaded_without_new_solve, etc.).
+// All kinds must be registered in eventKinds.js.
+app.post('/events', (req, res) => {
+  const { kind, severity, correlation_id, session_id, payload, message } = req.body;
+
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const user = token ? getUserFromToken(token) : null;
+
+  try {
+    logEvent({
+      kind,
+      severity: severity || 'info',
+      correlationId: correlation_id || null,
+      userId: user?.id || null,
+      sessionId: session_id || req.headers['x-session-id'] || null,
+      buildVersion: BUILD_VERSION,
+      payload: payload || null,
+      message: message || null,
+    });
+  } catch (err) {
+    console.warn('[/events] logEvent failed (non-fatal):', err.message);
+  }
+
+  res.json({ ok: true });
 });
 
 if (process.env.RUN_VALIDATION_TESTS === "true") {

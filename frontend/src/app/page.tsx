@@ -2,11 +2,16 @@
 
 import { BlockMath, InlineMath } from 'react-katex';
 import axios from 'axios';
-import { useEffect, useState, useRef, useCallback, FormEvent, KeyboardEvent, ChangeEvent, Component } from 'react';
+import { useEffect, useState, useReducer, useRef, useCallback, FormEvent, KeyboardEvent, ChangeEvent, Component } from 'react';
 import { DM_Serif_Display, JetBrains_Mono } from 'next/font/google';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '../lib/supabase';
 import { getSessionId, clearSessionId } from '../lib/session';
+import {
+  sessionReducer, initialState as sessionInitialState,
+  getBucketedSessions, getSessionSolves, isSessionExpanded,
+  type BucketKey, type SessionMeta, type SolveMeta,
+} from './state/sessionReducer';
 
 const dmSerifDisplay = DM_Serif_Display({ subsets: ['latin'], weight: '400' });
 const jetbrainsMono = JetBrains_Mono({ subsets: ['latin'] });
@@ -420,15 +425,20 @@ export default function Home() {
   const [highlightAdvancedBtn, setHighlightAdvancedBtn] = useState(false);
   const [advancedVerifFired, setAdvancedVerifFired] = useState(false);
 
-  // Sidebar collapse + hover-peek
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Session reducer — single source of truth for sidebar + history + session navigation
+  const [sState, dispatch] = useReducer(sessionReducer, sessionInitialState);
+  const sidebarCollapsed = sState.sidebarCollapsed;
+
+  // Sidebar hover-peek stays as local component state (brief-approved)
   const [sidebarPeeking, setSidebarPeeking] = useState(false);
   const sidebarOpen = !sidebarCollapsed || sidebarPeeking;
 
+  // Transient rename UI state
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [renameInput, setRenameInput] = useState('');
+
   // Auth + history
   const [user, setUser] = useState<import('@supabase/supabase-js').User | null>(null);
-  const [historyList, setHistoryList] = useState<HistorySolve[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authEmail, setAuthEmail] = useState('');
   const [authSent, setAuthSent] = useState(false);
@@ -574,17 +584,28 @@ export default function Home() {
     return () => clearTimeout(t);
   }, [extractError]);
 
-  const fetchHistory = useCallback(async (accessToken: string) => {
-    setHistoryLoading(true);
+  // Fetch sessions from GET /sessions and normalize into the reducer.
+  // Works for both authenticated users (JWT) and anonymous users (X-Session-Id).
+  // Called once on mount and on SIGNED_IN — NOT after each solve (optimistic reconcile handles that).
+  const fetchSessions = useCallback(async (accessToken?: string | null) => {
+    dispatch({ type: 'SESSIONS_FETCH_START' });
     try {
-      const res = await axios.get(`${API_URL}/history/list`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      setHistoryList(res.data.solves || []);
+      const headers: Record<string, string> = { 'X-Session-Id': getSessionId() };
+      if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+      const res = await axios.get(`${API_URL}/sessions`, { headers });
+      const rawSessions: Array<SessionMeta & { solves: Array<Omit<SolveMeta, 'cluster_session_id'>> }> =
+        res.data.sessions || [];
+      const sessions: SessionMeta[] = rawSessions.map(s => ({
+        id: s.id, name: s.name, source: s.source,
+        created_at: s.created_at, last_solve_at: s.last_solve_at, solve_count: s.solve_count,
+      }));
+      const solves: SolveMeta[] = rawSessions.flatMap(s =>
+        (s.solves || []).map(solve => ({ ...solve, cluster_session_id: s.id, raw_input_preview: (solve as unknown as { raw_input: string }).raw_input || '' }))
+      );
+      dispatch({ type: 'SESSIONS_FETCH_SUCCESS', sessions, solves });
     } catch (e) {
-      console.warn('[history] fetch failed', e);
-    } finally {
-      setHistoryLoading(false);
+      console.warn('[sessions] fetch failed', e);
+      dispatch({ type: 'SESSIONS_FETCH_ERROR' });
     }
   }, []);
 
@@ -592,10 +613,9 @@ export default function Home() {
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       const session = data.session;
-      if (session?.user) {
-        setUser(session.user);
-        fetchHistory(session.access_token);
-      }
+      setUser(session?.user ?? null);
+      // Fetch sessions for both authenticated and anonymous users
+      fetchSessions(session?.access_token);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -613,21 +633,50 @@ export default function Home() {
             console.warn('[merge-session] failed', e);
           }
         }
-        fetchHistory(session.access_token);
+        fetchSessions(session.access_token);
         setShowAuthModal(false);
       }
       if (event === 'SIGNED_OUT') {
-        setHistoryList([]);
+        // Clear session history state on sign-out
+        dispatch({ type: 'SESSIONS_FETCH_SUCCESS', sessions: [], solves: [] });
+        // Re-fetch anon sessions (if any survive sign-out)
+        fetchSessions(null);
       }
     });
 
     return () => subscription.unsubscribe();
-  }, [fetchHistory]);
+  }, [fetchSessions]);
 
   const loadHistoricalSolve = async (solveId: string) => {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
+    // Require auth for /history/get/:id (anon users see sessions in sidebar but can't load details)
     if (!token) return;
+
+    // Dispatch DISPLAY_SOLVE before the network call so sidebar highlights immediately.
+    // activeSessionId is NOT changed — loading old work is view-only.
+    dispatch({ type: 'DISPLAY_SOLVE', solveId });
+
+    // Fire session.loaded_without_new_solve when user views a non-active (historical) session
+    const solveRecord = sState.solvesById[solveId];
+    if (solveRecord && solveRecord.cluster_session_id !== sState.activeSessionId) {
+      axios.post(`${API_URL}/events`, {
+        kind: 'session.loaded_without_new_solve',
+        severity: 'info',
+        session_id: solveRecord.cluster_session_id,
+        payload: {
+          session_id: solveRecord.cluster_session_id,
+          displayed_solve_id: solveId,
+          was_active: false,
+        },
+      }, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'X-Session-Id': getSessionId(),
+        },
+      }).catch(() => { /* fire-and-forget — logging failure is non-fatal */ });
+    }
+
     try {
       const res = await axios.get(`${API_URL}/history/get/${solveId}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -808,6 +857,11 @@ export default function Home() {
     // Does NOT count toward the manual-use limit (advancedVerifUsed unchanged).
     const shouldAutoFire = !hasSeenAdvancedVerification;
 
+    // Optimistic insert — pending row appears with no perceptible delay
+    const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const rawInputPreview = question.length > 80 ? question.slice(0, 80) + '…' : question;
+    dispatch({ type: 'SOLVE_INITIATED', nonce, rawInputPreview });
+
     // Clear any in-flight stage timers from a previous solve
     solveTimersRef.current.forEach(clearTimeout);
     solveTimersRef.current = [];
@@ -876,9 +930,34 @@ export default function Home() {
       setCurrentCorrelationId(res.data.correlation_id || null);
       setArtifact(solveArtifact);
 
-      // Refresh history list so new solve appears immediately in sidebar
-      if (sessionData.session?.access_token) {
-        fetchHistory(sessionData.session.access_token);
+      // Optimistic reconcile — swaps the pending row for the real solve
+      const solveId = res.data.solve_id || null;
+      const clusterSessionId = res.data.cluster_session_id || null;
+      const sessionFromResponse = res.data.session || null;
+      if (solveId && clusterSessionId && sessionFromResponse) {
+        const solveMeta: SolveMeta = {
+          id: solveId,
+          cluster_session_id: clusterSessionId,
+          problem_kind: solveArtifact?.normalized_payload?.type || null,
+          badge: solveArtifact?.verification?.badge || null,
+          raw_input_preview: rawInputPreview,
+          created_at: res.data.created_at || new Date().toISOString(),
+          mode,
+        };
+        dispatch({
+          type: 'SOLVE_RECONCILED',
+          nonce,
+          solve: solveMeta,
+          session: {
+            id: clusterSessionId,
+            name: sessionFromResponse.name,
+            created_at: sessionFromResponse.created_at,
+            is_new: sessionFromResponse.is_new,
+          },
+        });
+      } else {
+        // No DB row (DB write failed non-fatally) — still remove the pending row
+        dispatch({ type: 'SOLVE_FAILED', nonce });
       }
 
       if (shouldAutoFire && solveArtifact) {
@@ -930,6 +1009,8 @@ export default function Home() {
       console.error(err);
       artifactRef.current = null;
       setArtifact(null);
+      // Remove optimistic pending row on failure
+      dispatch({ type: 'SOLVE_FAILED', nonce });
       // Clear wedge on error
       wedgeTimersRef.current.forEach(clearTimeout);
       wedgeTimersRef.current = [];
@@ -1207,6 +1288,24 @@ export default function Home() {
     return display;
   })();
 
+  // Sidebar session hierarchy — computed every render (derived, never stored)
+  const buckets = getBucketedSessions(sState);
+  const hasSessions = Object.keys(sState.sessionsById).length > 0;
+  const pendingSolvesArr = Object.values(sState.pendingSolves);
+
+  // Badge dot color helper for solve rows
+  const badgeDotColor = (badge: string | null) => {
+    if (badge === 'verified') return 'bg-emerald-400';
+    if (badge === 'discrepancy_detected') return 'bg-amber-400';
+    if (badge === 'checked') return 'bg-white/40';
+    return 'bg-zinc-600';
+  };
+
+  // Bucket display labels
+  const BUCKET_LABELS: Record<BucketKey, string> = {
+    today: 'Today', yesterday: 'Yesterday', week: 'This week', older: 'Older',
+  };
+
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
       <style>{`
@@ -1244,13 +1343,13 @@ export default function Home() {
         onMouseLeave={() => { if (sidebarCollapsed) setSidebarPeeking(false); }}
         onClick={() => {
           if (sidebarCollapsed && sidebarPeeking) {
-            setSidebarCollapsed(false);
+            dispatch({ type: 'SET_SIDEBAR_COLLAPSED', value: false });
             setSidebarPeeking(false);
           }
         }}
       >
-        {/* Logo row + toggle */}
-        <div className="flex items-center justify-between pb-6 pt-1">
+        {/* Logo row + toggle (flex-shrink-0) */}
+        <div className="flex flex-shrink-0 items-center justify-between pb-6 pt-1">
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); handleReset(); }}
@@ -1265,7 +1364,7 @@ export default function Home() {
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                setSidebarCollapsed(true);
+                dispatch({ type: 'SET_SIDEBAR_COLLAPSED', value: true });
                 setSidebarPeeking(false);
               }}
               className="rounded p-1 text-zinc-600 transition hover:text-zinc-400"
@@ -1279,8 +1378,8 @@ export default function Home() {
           )}
         </div>
 
-        {/* Nav */}
-        <div className="space-y-1">
+        {/* Nav (flex-shrink-0) */}
+        <div className="flex-shrink-0 space-y-1">
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); handleReset(); }}
@@ -1309,14 +1408,15 @@ export default function Home() {
           )}
         </div>
 
-        {sidebarOpen && <div className="my-4 border-t border-white/[0.08]" />}
+        {/* Divider (flex-shrink-0) */}
+        {sidebarOpen && <div className="flex-shrink-0 my-4 border-t border-white/[0.08]" />}
 
-        {/* Batch indicator — shown when processing or complete, Pro-only */}
+        {/* Batch indicator (flex-shrink-0, conditional) */}
         {BATCH_UI_ENABLED && sidebarOpen && (batchStage === 'processing' || batchStage === 'complete') && (
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); setShowBatchResults(true); }}
-            className="mx-3 mb-3 flex w-[calc(100%-24px)] items-center gap-2 rounded-md border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-left transition-colors hover:bg-white/[0.05]"
+            className="flex-shrink-0 mx-3 mb-3 flex w-[calc(100%-24px)] items-center gap-2 rounded-md border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-left transition-colors hover:bg-white/[0.05]"
           >
             {batchStage === 'processing' ? (
               <>
@@ -1336,15 +1436,23 @@ export default function Home() {
           </button>
         )}
 
-        {/* Sessions — hidden when collapsed */}
-        {sidebarOpen && (
-          <div>
-            <div className="px-3 pb-2 text-[11px] uppercase tracking-wider text-zinc-500">
-              {user && historyList.length > 0 ? `Sessions (${historyList.length})` : 'Sessions'}
-            </div>
+        {/* Sessions region — flex-1 min-h-0 overflow-y-auto gives full-height internal scroll */}
+        {sidebarOpen ? (
+          <div className="flex-1 min-h-0 overflow-y-auto" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+            <div className="px-3 pb-1 pt-0 text-[11px] uppercase tracking-wider text-zinc-500">Sessions</div>
 
-            {/* State A: signed out */}
-            {!user && (
+            {/* Loading indicator */}
+            {sState.loadStatus === 'loading' && (
+              <p className="px-3 py-2 text-[13px] text-zinc-600">Loading…</p>
+            )}
+
+            {/* Empty: signed in, no sessions */}
+            {sState.loadStatus === 'loaded' && !hasSessions && user && pendingSolvesArr.length === 0 && (
+              <p className="px-3 py-2 text-[13px] italic text-zinc-600">Solve a problem to start your history.</p>
+            )}
+
+            {/* Empty: signed out, no sessions */}
+            {sState.loadStatus === 'loaded' && !hasSessions && !user && pendingSolvesArr.length === 0 && (
               <div className="mx-3 my-2 rounded-md border border-white/[0.04] bg-white/[0.02] p-3">
                 <p className="text-[14px] leading-6 text-zinc-400">Sign in to save and track your sessions</p>
                 <button
@@ -1357,47 +1465,206 @@ export default function Home() {
               </div>
             )}
 
-            {/* State B: signed in, no history */}
-            {user && historyList.length === 0 && !historyLoading && (
-              <p className="px-3 py-2 text-[13px] italic text-zinc-600">Solve a problem to start your history.</p>
-            )}
-
-            {/* State B loading */}
-            {user && historyLoading && (
-              <p className="px-3 py-2 text-[13px] text-zinc-600">Loading…</p>
-            )}
-
-            {/* State C: signed in, has history */}
-            {user && historyList.length > 0 && (
-              <div className="mt-1 max-h-[320px] overflow-y-auto">
-                {historyList.map((item) => {
-                  const badgeColor =
-                    item.badge === 'verified' ? 'bg-emerald-400' :
-                    item.badge === 'discrepancy_detected' ? 'bg-amber-400' :
-                    item.badge === 'checked' ? 'bg-white/40' :
-                    'bg-zinc-600';
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); loadHistoricalSolve(item.id); }}
-                      className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left transition-colors hover:bg-white/[0.03]"
-                    >
-                      <span className={`mt-[5px] h-[6px] w-[6px] flex-shrink-0 rounded-full ${badgeColor}`} />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-[13px] text-zinc-300">{item.raw_input}</p>
-                        <p className="text-[11px] text-zinc-600">{relativeTime(item.created_at)}</p>
-                      </div>
-                    </button>
-                  );
-                })}
+            {/* Idle state before first fetch */}
+            {sState.loadStatus === 'idle' && !user && (
+              <div className="mx-3 my-2 rounded-md border border-white/[0.04] bg-white/[0.02] p-3">
+                <p className="text-[14px] leading-6 text-zinc-400">Sign in to save and track your sessions</p>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setShowAuthModal(true); setAuthSent(false); setAuthEmail(''); setAuthError(null); }}
+                  className="mt-2 w-full rounded-md bg-zinc-800 px-3 py-1.5 text-[13px] text-zinc-100 transition-colors hover:bg-zinc-700"
+                >
+                  Sign in
+                </button>
               </div>
             )}
+
+            {/* Three-level hierarchy */}
+            {(hasSessions || pendingSolvesArr.length > 0) && (
+              <>
+                {/* Pending solves with no session yet (very first solve, no activeSessionId) */}
+                {pendingSolvesArr.filter(p => p.optimisticSessionId === null).map(pending => (
+                  <div key={pending.nonce} className="flex items-center gap-2 px-3 py-2 opacity-50">
+                    <div className="h-[6px] w-[6px] flex-shrink-0 animate-pulse rounded-full bg-zinc-500" />
+                    <span className="truncate text-[13px] italic text-zinc-500">solving…</span>
+                  </div>
+                ))}
+
+                {/* Time bucket sections */}
+                {(Object.keys(BUCKET_LABELS) as BucketKey[]).map(bucketKey => {
+                  const sessionsInBucket = buckets[bucketKey];
+                  const pendingInBucket = pendingSolvesArr.filter(p =>
+                    p.optimisticSessionId !== null &&
+                    sessionsInBucket.some(s => s.id === p.optimisticSessionId)
+                  );
+                  if (sessionsInBucket.length === 0 && pendingInBucket.length === 0) return null;
+                  const isBucketExpanded = sState.expandedBuckets[bucketKey];
+                  return (
+                    <div key={bucketKey} className="mb-1">
+                      {/* Bucket header row */}
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); dispatch({ type: 'TOGGLE_BUCKET', bucketKey }); }}
+                        className="flex w-full items-center gap-1.5 px-3 py-1 text-[10px] uppercase tracking-wider text-zinc-600 transition-colors hover:text-zinc-400"
+                      >
+                        <svg
+                          width="7" height="7" viewBox="0 0 8 8" fill="currentColor"
+                          className={`flex-shrink-0 transition-transform duration-150 ${isBucketExpanded ? 'rotate-90' : ''}`}
+                        >
+                          <polygon points="2,1 6,4 2,7" />
+                        </svg>
+                        <span>{BUCKET_LABELS[bucketKey]}</span>
+                      </button>
+
+                      {isBucketExpanded && (
+                        <>
+                          {/* Pending solves whose optimistic session is in this bucket */}
+                          {pendingInBucket.map(pending => (
+                            <div key={pending.nonce} className="ml-3 flex items-center gap-2 py-1.5 pl-3 pr-3 opacity-50">
+                              <div className="h-[6px] w-[6px] flex-shrink-0 animate-pulse rounded-full bg-zinc-500" />
+                              <span className="truncate text-[13px] italic text-zinc-500">solving…</span>
+                            </div>
+                          ))}
+
+                          {/* Session rows */}
+                          {sessionsInBucket.map(session => {
+                            const sessionSolves = getSessionSolves(sState, session.id);
+                            const isSessionOpen = isSessionExpanded(sState, session.id);
+                            const pendingForSession = pendingSolvesArr.filter(p => p.optimisticSessionId === session.id);
+                            const isRenaming = renamingSessionId === session.id;
+                            return (
+                              <div key={session.id}>
+                                {/* Session header row */}
+                                <div className="group relative flex items-center px-3 py-1.5 transition-colors hover:bg-white/[0.03]">
+                                  {/* Batch session icon */}
+                                  {session.source === 'batch' && (
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="mr-1.5 flex-shrink-0 text-zinc-500">
+                                      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+                                      <polyline points="2 17 12 22 22 17" />
+                                      <polyline points="2 12 12 17 22 12" />
+                                    </svg>
+                                  )}
+                                  {/* Session name / rename input */}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); dispatch({ type: 'TOGGLE_SESSION', sessionId: session.id }); }}
+                                    className="min-w-0 flex-1 text-left"
+                                  >
+                                    {isRenaming ? (
+                                      <input
+                                        autoFocus
+                                        value={renameInput}
+                                        onChange={(e) => setRenameInput(e.target.value)}
+                                        onKeyDown={async (e) => {
+                                          if (e.key === 'Enter') {
+                                            e.preventDefault();
+                                            const trimmed = renameInput.trim();
+                                            if (trimmed && trimmed.length <= 200) {
+                                              const { data: sd } = await supabase.auth.getSession();
+                                              const hdrs: Record<string, string> = { 'X-Session-Id': getSessionId() };
+                                              if (sd.session?.access_token) hdrs['Authorization'] = `Bearer ${sd.session.access_token}`;
+                                              axios.patch(`${API_URL}/sessions/${session.id}/rename`, { name: trimmed }, { headers: hdrs })
+                                                .then(() => dispatch({ type: 'SESSION_RENAMED', sessionId: session.id, name: trimmed }))
+                                                .catch(console.warn);
+                                            }
+                                            setRenamingSessionId(null);
+                                          }
+                                          if (e.key === 'Escape') { e.stopPropagation(); setRenamingSessionId(null); }
+                                        }}
+                                        onBlur={() => setRenamingSessionId(null)}
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="w-full bg-transparent text-[13px] text-zinc-200 outline-none"
+                                      />
+                                    ) : (
+                                      <span className="block truncate text-[13px] text-zinc-300">
+                                        {session.name || 'Unnamed session'}
+                                      </span>
+                                    )}
+                                  </button>
+                                  {/* Solve count badge */}
+                                  {!isRenaming && (
+                                    <span className="ml-1 flex-shrink-0 text-[11px] text-zinc-600">{session.solve_count}</span>
+                                  )}
+                                  {/* Kebab rename button — revealed on row hover */}
+                                  {!isRenaming && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setRenamingSessionId(session.id);
+                                        setRenameInput(session.name || '');
+                                      }}
+                                      className="ml-1 hidden flex-shrink-0 rounded p-0.5 text-zinc-600 transition hover:text-zinc-300 group-hover:block"
+                                      title="Rename session"
+                                    >
+                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                                        <circle cx="5" cy="12" r="2" />
+                                        <circle cx="12" cy="12" r="2" />
+                                        <circle cx="19" cy="12" r="2" />
+                                      </svg>
+                                    </button>
+                                  )}
+                                </div>
+
+                                {/* Solve rows under session */}
+                                {isSessionOpen && (
+                                  <div>
+                                    {/* Pending solves for this session */}
+                                    {pendingForSession.map(pending => (
+                                      <div key={pending.nonce} className="flex items-center gap-2 py-1.5 pl-6 pr-3 opacity-50">
+                                        <div className="h-[6px] w-[6px] flex-shrink-0 animate-pulse rounded-full bg-zinc-500" />
+                                        <span className="truncate text-[13px] italic text-zinc-500">solving…</span>
+                                      </div>
+                                    ))}
+                                    {/* Real solve rows */}
+                                    {sessionSolves.map(solve => {
+                                      const isActiveSolve = sState.displayedSolveId === solve.id;
+                                      return (
+                                        <button
+                                          key={solve.id}
+                                          type="button"
+                                          onClick={(e) => { e.stopPropagation(); loadHistoricalSolve(solve.id); }}
+                                          className={`flex w-full items-start gap-2 py-1.5 pl-6 pr-3 text-left transition-colors ${isActiveSolve ? 'bg-white/[0.05]' : 'hover:bg-white/[0.03]'}`}
+                                        >
+                                          <span className={`mt-[5px] h-[6px] w-[6px] flex-shrink-0 rounded-full ${badgeDotColor(solve.badge)}`} />
+                                          <div className="min-w-0 flex-1">
+                                            <p className="truncate text-[13px] text-zinc-300">{solve.raw_input_preview}</p>
+                                            <p className="text-[11px] text-zinc-600">{relativeTime(solve.created_at)}</p>
+                                          </div>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* Sign-in prompt for anon users who have sessions */}
+                {!user && sState.loadStatus === 'loaded' && hasSessions && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setShowAuthModal(true); setAuthSent(false); setAuthEmail(''); setAuthError(null); }}
+                    className="mx-3 mt-2 block w-[calc(100%-24px)] rounded-md bg-zinc-900 px-3 py-1.5 text-center text-[12px] text-zinc-500 transition-colors hover:text-zinc-300"
+                  >
+                    Sign in to sync sessions →
+                  </button>
+                )}
+              </>
+            )}
           </div>
+        ) : (
+          // Collapsed sidebar: spacer ensures bottom items remain at the bottom
+          <div className="flex-1 min-h-0" />
         )}
 
-        {/* Bottom items */}
-        <div className="mt-auto space-y-1 border-t border-white/[0.06] pt-3">
+        {/* Bottom items (flex-shrink-0 — no mt-auto; sessions flex-1 pushes these down naturally) */}
+        <div className="flex-shrink-0 space-y-1 border-t border-white/[0.06] pt-3">
           {user ? (
             <div className={`${sidebarOpen ? 'px-3' : 'px-0'}`}>
               {sidebarOpen && (

@@ -83,10 +83,11 @@ async function insertSolve({ userId, anonSessionId, rawInput, mode, artifact }) 
 
   if (error) throw error;
 
-  // ---- 3. Auto-name the session (source = 'auto' only) ----
+  // ---- 3. Auto-name the session; capture name+created_at for /solve response ----
+  let sessionMeta = null;
   if (clusterSessionId) {
     try {
-      await recomputeSessionName(clusterSessionId);
+      sessionMeta = await recomputeSessionName(clusterSessionId);
     } catch (nameErr) {
       console.error('[insertSolve] session naming error (non-fatal):', nameErr.message);
     }
@@ -129,6 +130,10 @@ async function insertSolve({ userId, anonSessionId, rawInput, mode, artifact }) 
     user_id:            data.user_id,
     created_at:         data.created_at,
     cluster_session_id: clusterSessionId,
+    // Session metadata for optimistic sidebar reconcile (Option A — additive)
+    session: sessionMeta
+      ? { name: sessionMeta.name, created_at: sessionMeta.created_at, is_new: sessionCreated }
+      : null,
   };
 }
 
@@ -140,8 +145,12 @@ async function recomputeSessionName(sessionId) {
     .eq('id', sessionId)
     .single();
 
-  if (sessErr || !session) return;
-  if (session.source !== 'auto') return; // renamed or batch — never touch
+  if (sessErr || !session) return null;
+
+  // For renamed/batch sessions, skip recompute but still return current name + created_at
+  if (session.source !== 'auto') {
+    return { name: session.name, created_at: session.created_at };
+  }
 
   // Dominant kind: group by problem_kind, order by count desc, then most recent
   const { data: kinds } = await supabase
@@ -150,7 +159,9 @@ async function recomputeSessionName(sessionId) {
     .eq('cluster_session_id', sessionId)
     .not('problem_kind', 'is', null);
 
-  if (!kinds || kinds.length === 0) return;
+  if (!kinds || kinds.length === 0) {
+    return { name: session.name, created_at: session.created_at };
+  }
 
   const counts = {};
   for (const row of kinds) {
@@ -161,19 +172,21 @@ async function recomputeSessionName(sessionId) {
   const dominant = Object.entries(counts)
     .sort((a, b) => b[1] - a[1])[0]?.[0];
 
-  if (!dominant) return;
+  if (!dominant) return { name: session.name, created_at: session.created_at };
 
   const label = kindDisplayLabel(dominant);
   const dateStr = sessionDateLabel(session.created_at);
   const newName = `${label}, ${dateStr}`;
 
-  if (newName === session.name) return;
+  if (newName !== session.name) {
+    await supabase
+      .from('sessions')
+      .update({ name: newName })
+      .eq('id', sessionId)
+      .eq('source', 'auto'); // double-guard: never overwrite renamed/batch
+  }
 
-  await supabase
-    .from('sessions')
-    .update({ name: newName })
-    .eq('id', sessionId)
-    .eq('source', 'auto'); // double-guard: never overwrite renamed/batch
+  return { name: newName, created_at: session.created_at };
 }
 
 async function checkCrossKindSignal({ clusterSessionId, logEvent, artifact, userId }) {

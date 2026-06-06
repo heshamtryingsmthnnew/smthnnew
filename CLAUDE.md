@@ -1257,7 +1257,46 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     session.loaded_without_new_solve deferred to frontend (Brief #4/#5).
   - BUILD_VERSION: "v4.5.0-session-model"
 
-🔲 Phase 5a — Session Model + Sidebar Restructure
+✅ Phase 5a — Sidebar Restructure + Optimistic Insert ✅ COMPLETE
+  - frontend/src/app/state/sessionReducer.ts: single source of truth for
+    sidebar + history + session navigation. Replaces 7 useState vars
+    (sidebarCollapsed, historyList, historyLoading + session pointers).
+    Two-pointer model: activeSessionId (server-authoritative, new solves only)
+    vs displayedSessionId (view-only, changed by loading old work).
+    activeSessionId is ONLY mutated by SOLVE_RECONCILED — never by DISPLAY_SOLVE.
+    Normalized store: sessionsById + solvesById (flat byId maps, derived selectors).
+    Derived: getBucketedSessions, getSessionSolves, isSessionExpanded selectors.
+    Today bucket auto-expanded; Today's sessions auto-expanded; all others collapsed.
+    Explicit TOGGLE_BUCKET / TOGGLE_SESSION override the defaults.
+    pendingSolves map keyed by nonce for optimistic insert/remove.
+    Batch slice (panelOpen, job) reserved for Brief #6; tab microcopy reserved for Brief #5.
+  - /solve response extended with session: { name, created_at, is_new } — returned
+    from insertSolve after dominant-kind recompute; additive only.
+    recomputeSessionName() now returns { name, created_at } (was void).
+  - History source switched from /history/list to GET /sessions. No refetch after
+    solves — optimistic reconcile inserts locally. /history/list left in place (dead).
+  - Optimistic insert in doSolve: SOLVE_INITIATED on solve fire (pending row visible
+    instantly), SOLVE_RECONCILED on success (swaps pending for real solve, sets pointers,
+    bumps session solve_count, updates session name to post-recompute value),
+    SOLVE_FAILED on error (removes pending row, existing error UI fires).
+  - Sidebar rebuilt as three-level hierarchy: time bucket → session → problem.
+    Full-height scroll fixed: sessions region is flex-1 min-h-0 overflow-y-auto
+    (was max-h-[320px] cutoff). Top nav and bottom cluster are flex-shrink-0.
+    Session rows: batch sessions distinguished by stacked-layers icon.
+    Context-menu rename on session rows (hover-revealed ···): inline input →
+    PATCH /sessions/:id/rename → dispatch SESSION_RENAMED.
+    Pending rows: "solving…" with pulse animation. Real solve rows: badge dot + timestamp.
+    Currently displayed solve gets bg-white/[0.05] active treatment.
+    Sign-in prompt shown for anon users who have local sessions.
+  - session.loaded_without_new_solve event instrumented (frontend → POST /events):
+    fires in loadHistoricalSolve when viewing a non-active session
+    (displayed solve's cluster_session_id !== activeSessionId).
+    Payload: { session_id, displayed_solve_id, was_active: false }.
+  - POST /events backend endpoint added to index.js — receives frontend-originated
+    events, calls logEvent fire-and-forget. Auth optional (Bearer or X-Session-Id).
+  - BUILD_VERSION: "v4.6.0-sidebar-optimistic"
+
+🔲 Phase 5a — Session Tab + Batch Panel Refactor (remaining)
 
   JPEG Extraction Bug — RESOLVED (no recurrence):
   - events table queried for debug.observation tagged jpeg_bug_2026_05:
@@ -1265,79 +1304,26 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
   - Diagnostic instrumentation retained for passive monitoring; resolved
     (promoted/kept/deleted) in the pre-Phase-6 debug.observation sweep.
 
-  Sidebar Restructure + Optimistic Insert (ship as one unit — coupled):
-  - Three-level hierarchy: time bucket > session > problem.
-  - Time buckets: Today / Yesterday / This week / Older.
-    Today bucket: auto-expanded on load.
-    Sessions within Today: auto-expanded.
-    All other buckets and their sessions: collapsed by default.
-  - Sessions within each bucket auto-grouped by session_id.
-    Displayed with auto-generated name and solve count.
-  - Problems within each session listed as clickable rows showing
-    truncated question text and verification badge.
-  - Session header click: expand/collapse that session. No solve load.
-    Loading is always at problem level — never triggered by session click.
-  - Problem click: load that solve artifact into main workspace.
-    Top-center session tab updates to reflect that session name.
-  - Optimistic insert: on solve fire (/solve called), a new problem row
-    appears immediately under the current session in the sidebar with
-    a subtle "solving..." state. Reconcile (update badge, question text)
-    when /solve returns. If solve fails, remove the optimistic row.
-  - New solves always go to the current time-cluster session.
-    Loading an old solve is a view-only action. Firing a new solve
-    always creates or extends the current 4-hour-window session,
-    regardless of what old solve is currently displayed in the workspace.
-    Top-center tab updates to current session on solve fire.
-
-  Top-Center Session Tab:
+  Top-Center Session Tab (Brief #5):
   - See Section 5 (Layout Blueprint) for full visual spec.
-  - State management: a SINGLE useReducer is the one source of truth for
-    sidebar + session tab + history + batch-panel state. No parallel
-    useState shape. The reducer MUST model two distinct concepts as separate
-    fields:
-      activeSession    — where new solves attach (current 4-hour cluster,
-                         server-derived). Never changed by loading old work.
-      displayedSession — what the workspace is currently rendering (may be a
-                         historical session loaded from the sidebar).
-    The load-old-then-solve-new transition (Section 5 microcopy) is the
-    state change from displayedSession=old to displayedSession=active when a
-    new solve fires; it is a reducer event, not a useEffect chain. The reducer
-    shape is reviewed and locked in chat before Brief #4 is written.
   - Session tab reflects the active session (current 4-hour window).
     When user loads an old solve, tab shows that solve's session name
     but new solves still fire into the current session.
+  - Reducer slices reserved: tabMicrocopy ('started_new_session' | null),
+    TAB_NAV_SOLVE action (no-op stub). Brief #5 wires both.
+  - Sticky answer bar shifts from top-0 to top-9 when session tab lands.
 
-  Batch Entry + Result Panel Refactor (replaces Phase 5 full-screen overlay):
-  - All batch UI in this refactor inherits the Pro-only gate from the
-    Pre-5a Batch Gating Correction. The sidebar batch entry, secondary
-    expanding panel, and batch result rendering must all be wrapped in
-    the BATCH_UI_ENABLED check (or its Phase 6 isPro replacement).
-    Free users see no batch UI anywhere — same as Export, same as
-    Collections.
-  - "Batch solve" entry: now in sidebar as noted in Quick Wins above.
+  Batch Entry + Result Panel Refactor (Brief #6):
+  - All batch UI inherits the Pro-only gate from Pre-5a Batch Gating Correction.
   - Batch result view: full-screen overlay (Phase 5) is deleted entirely.
-    Replaced by a secondary expanding panel.
-  - Secondary panel: slides out to the right of the main sidebar when
-    a batch job is active, pushing the main content area right.
-    Panel is contextual — absent when no batch is active.
-    Honors the no-permanent-rail principle.
-  - Trigger: click the batch progress indicator in the main sidebar
-    (pulsing amber dot while processing, colored dot when complete).
-    Panel expands. Click again or click outside to collapse.
-  - Panel contents: queue list. Each item shows question (truncated),
-    position in queue, and badge (or "solving..." state while pending).
-    Click any queue item → loads that solve artifact into the main
-    single-solve renderer in the workspace. Full solve view, not a
-    summary. Discrepancy-first: auto-expand first discrepant item on
-    batch complete.
-  - Panel width: fixed, not resizable in v1. Reasonable minimum to
-    show truncated question + badge without wrapping.
+    Replaced by a secondary expanding panel sliding out from the sidebar.
+  - Trigger: click the batch progress indicator in the sidebar.
+  - Panel contents: queue list. Click any item → loads artifact into workspace.
+    Discrepancy-first: auto-expand first discrepant item on batch complete.
   - Batch session: each batch job is its own session. Auto-named from
-    extraction source — filename if input was a document
-    ("Problems from notes.pdf"), first problem text if raw input.
-    Does not merge into the surrounding time-cluster session.
-    Appears in sidebar hierarchy under its time bucket as a named
-    session like any other.
+    extraction source. Does not merge into the surrounding time-cluster session.
+  - Reducer slices reserved: batch.panelOpen, batch.job, BATCH_PANEL_TOGGLE,
+    BATCH_JOB_SET, BATCH_QUEUE_UPDATED.
 
   Do Not Build in Phase 5a (log in STRATEGIC_DECISIONS.md):
   - Manual session creation
@@ -1700,6 +1686,8 @@ Phase 5a — Session Data Model (new)
   - supabase.js kindDisplayLabel(kind): maps problem_kind → display label.
   - /solve response: session_id → cluster_session_id. Both success and error
     paths updated. Shape: { correlation_id, solve_id, cluster_session_id }.
+    Also returns created_at (solve row) + session: { name, created_at, is_new }
+    after Phase 5a (additive; used by optimistic reconcile).
   - GET /sessions: owner-scoped sessions with nested solves + solve_count.
     Auth: JWT user_id or X-Session-Id anon key.
   - PATCH /sessions/:id/rename: ownership-verified rename, sets source=
@@ -1707,10 +1695,47 @@ Phase 5a — Session Data Model (new)
   - /auth/merge-session: now re-owns sessions rows in addition to solves.
     Sets sessions.user_id = auth user, anon_session_id = null.
   - /history/list: UNTOUCHED — response shape preserved, still functional.
+    Now dead (frontend switched to GET /sessions). Removal in pre-Phase-6 sweep.
   - getDailyUsage: session_id → anon_session_id column.
   - All logEvent sessionId params in /solve + /batch pass cluster or anon
     id as appropriate.
-  - BUILD_VERSION: "v4.5.0-session-model"
+  - recomputeSessionName(): now returns { name, created_at } (was void).
+    Additive — existing callers unaffected.
+  - POST /events: new endpoint for frontend-originated events. Calls logEvent
+    fire-and-forget. Auth optional (Bearer or X-Session-Id header).
+  - BUILD_VERSION: "v4.6.0-sidebar-optimistic"
+
+Phase 5a — Sidebar Restructure + Optimistic Insert (new)
+  - frontend/src/app/state/sessionReducer.ts: complete reducer module.
+    Types: SessionMeta, SolveMeta, PendingSolve, BucketKey, State, Action.
+    Normalized store: sessionsById + solvesById (flat byId maps).
+    Two-pointer state: activeSessionId (server-authoritative, new solves only)
+    vs displayedSessionId (view-only, loadHistoricalSolve). DISPLAY_SOLVE never
+    changes activeSessionId — this invariant is in the reducer.
+    Selectors: getBucketedSessions, getSessionSolves, isSessionExpanded.
+    Batch slice (panelOpen, job) reserved; tab microcopy reserved; delete
+    cases reserved as no-op stubs.
+  - page.tsx: useReducer replaces sidebarCollapsed, historyList, historyLoading
+    useState vars + adds session navigation pointers. sidebarPeeking stays local.
+    renamingSessionId/renameInput are transient UI state (local useState).
+  - fetchSessions(): calls GET /sessions, normalizes nested response into
+    SessionMeta[] + SolveMeta[] flat arrays, dispatches SESSIONS_FETCH_SUCCESS.
+    Called on mount and SIGNED_IN. Not called after solves.
+  - doSolve: SOLVE_INITIATED dispatched before await /solve (nonce + preview).
+    On success: SOLVE_RECONCILED with solveMeta + session object from response.
+    On error: SOLVE_FAILED. Removes pending row on either branch.
+  - loadHistoricalSolve: dispatches DISPLAY_SOLVE before network call.
+    Fires session.loaded_without_new_solve via POST /events when viewing
+    non-active session (cluster_session_id !== activeSessionId).
+  - Sidebar: flex flex-col h-screen + sessions region flex-1 min-h-0
+    overflow-y-auto. Three-level hierarchy: bucket → session → problem.
+    Today auto-expanded; others collapsed. Bucket/session toggles via reducer.
+    Session rows: batch icon for source==='batch'. Kebab rename on hover.
+    Pending rows: "solving…" pulse under their session.
+    Real solve rows: badge dot + raw_input_preview + relativeTime.
+    Active solve highlighted bg-white/[0.05].
+  - All dispatch({ type: 'SET_SIDEBAR_COLLAPSED', value }) replacing
+    setSidebarCollapsed direct calls.
 
 Phase 5 — Batch Solve (new)
   - backend: solveOne(rawInput, mode) standalone async function — full solve
@@ -2132,7 +2157,7 @@ Current kinds:
   session.cluster_boundary ✅ instrumented (insertSolve — boundary_crossed)
   session.cross_kind_first_problem ✅ instrumented (insertSolve — first_kind ≠ dominant)
   session.renamed ✅ instrumented (PATCH /sessions/:id/rename)
-  session.loaded_without_new_solve — registered, uninstrumented (frontend, Brief #4/#5)
+  session.loaded_without_new_solve ✅ instrumented (frontend → POST /events, loadHistoricalSolve)
 - Frontend: frontend.katex_render_fail, frontend.desmos_init_fail, frontend.sse_stream_break
 - Debug: debug.observation (testing-phase only, must be removed before Phase 6)
 
