@@ -8,7 +8,7 @@ const { buildProblemArtifact } = require('./artifact');
 const { queryWolfram, compareWithWolfram, inferKindFromQuery } = require('./wolfram');
 const { logCasEvent } = require('./casLogger');
 const { runPhysicsAudit } = require('./physicsAudit');
-const { insertSolve, updateSolveVerification, getUserFromToken, supabase } = require('./supabase');
+const { insertSolve, updateSolveVerification, getUserFromToken, supabase, recomputeSessionName } = require('./supabase');
 const { logEvent, newCorrelationId } = require('./eventLog');
 
 const upload = multer({
@@ -34,7 +34,7 @@ const batchUpload = multer({
   },
 });
 
-const BUILD_VERSION = "v4.4.2-batch-image-transport";
+const BUILD_VERSION = "v4.5.0-session-model";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
@@ -2117,13 +2117,13 @@ Mode: physics`;
     const authHeader = req.headers['authorization'] || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
     const user = token ? getUserFromToken(token) : null;
-    const sessionIdFromHeader = req.headers['x-session-id'] || null;
+    const anonSessionId = req.headers['x-session-id'] || null;
 
     let solveRow = null;
     try {
       solveRow = await insertSolve({
         userId: user?.id || null,
-        sessionId: sessionIdFromHeader,
+        anonSessionId,
         rawInput: rawInput,
         mode: safeMode,
         artifact,
@@ -2135,17 +2135,17 @@ Mode: physics`;
         severity: 'error',
         correlationId,
         userId: user?.id || null,
-        sessionId: sessionIdFromHeader,
+        sessionId: anonSessionId,
         buildVersion: BUILD_VERSION,
         payload: { phase: 'db_insert', error_message: dbErr.message?.slice(0, 200) },
-        message: 'insertSolve threw — response degraded to no solve_id/session_id',
+        message: 'insertSolve threw — response degraded to no solve_id/cluster_session_id',
       });
     }
 
     res.json({
       correlation_id: correlationId,
       solve_id: solveRow?.id || null,
-      session_id: solveRow?.session_id || null,
+      cluster_session_id: solveRow?.cluster_session_id || null,
       answer,
       verificationStatus: verification.status,
       verificationDetails: verification.details || verification.meta || null,
@@ -2169,7 +2169,7 @@ Mode: physics`;
     res.status(500).json({
       correlation_id: correlationId,
       solve_id: null,
-      session_id: null,
+      cluster_session_id: null,
       answer: '',
       verificationStatus: 'unavailable',
       verificationDetails: null,
@@ -2700,7 +2700,7 @@ app.get('/history/get/:id', async (req, res) => {
   }
 });
 
-// ---- /auth/merge-session — merge anonymous solves into authenticated user ----
+// ---- /auth/merge-session — merge anonymous solves + sessions into authenticated user ----
 app.post('/auth/merge-session', async (req, res) => {
   const authHeader = req.headers['authorization'] || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
@@ -2714,15 +2714,30 @@ app.post('/auth/merge-session', async (req, res) => {
 
   try {
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    // 1. Re-own solves (anon_session_id column — post-migration schema)
     const { data, error } = await supabase
       .from('solves')
-      .update({ user_id: user.id, session_id: null })
-      .eq('session_id', session_id)
+      .update({ user_id: user.id, anon_session_id: null })
+      .eq('anon_session_id', session_id)
       .is('user_id', null)
       .gte('created_at', cutoff)
       .select('id');
 
     if (error) throw error;
+
+    // 2. Re-own the corresponding sessions rows so history reads by user_id find them
+    // Known v1 edge case: concurrent authenticated + anonymous solves in the same window
+    // may produce two sessions in one window. Self-corrects on the next solve via clustering.
+    const { error: sessErr } = await supabase
+      .from('sessions')
+      .update({ user_id: user.id, anon_session_id: null })
+      .eq('anon_session_id', session_id)
+      .is('user_id', null);
+
+    if (sessErr) {
+      console.error('[auth/merge-session] sessions re-own error (non-fatal):', sessErr.message);
+    }
 
     res.json({ merged: (data || []).length });
   } catch (err) {
@@ -2736,6 +2751,151 @@ app.post('/auth/merge-session', async (req, res) => {
       message: 'Anonymous session merge failed',
     });
     res.status(500).json({ error: 'Merge failed' });
+  }
+});
+
+// ---- GET /sessions — grouped sessions with nested solves for the owner ----
+app.get('/sessions', async (req, res) => {
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const user = token ? getUserFromToken(token) : null;
+  const anonSessionId = req.headers['x-session-id'] || null;
+
+  if (!user && !anonSessionId) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    // Fetch sessions owned by this owner
+    let sessQuery = supabase
+      .from('sessions')
+      .select('id, name, source, created_at, last_solve_at');
+
+    if (user) {
+      sessQuery = sessQuery.eq('user_id', user.id);
+    } else {
+      sessQuery = sessQuery.eq('anon_session_id', anonSessionId);
+    }
+
+    sessQuery = sessQuery.order('last_solve_at', { ascending: false });
+
+    const { data: sessions, error: sessErr } = await sessQuery;
+    if (sessErr) throw sessErr;
+
+    if (!sessions || sessions.length === 0) {
+      return res.json({ sessions: [] });
+    }
+
+    const sessionIds = sessions.map(s => s.id);
+
+    // Fetch solves for all sessions in one query
+    const { data: solves, error: solvesErr } = await supabase
+      .from('solves')
+      .select('id, created_at, raw_input, mode, badge, problem_kind, cluster_session_id')
+      .in('cluster_session_id', sessionIds)
+      .order('created_at', { ascending: false });
+
+    if (solvesErr) throw solvesErr;
+
+    // Group solves by session
+    const solvesBySession = {};
+    for (const solve of (solves || [])) {
+      const sid = solve.cluster_session_id;
+      if (!solvesBySession[sid]) solvesBySession[sid] = [];
+      solvesBySession[sid].push({
+        id: solve.id,
+        created_at: solve.created_at,
+        raw_input: solve.raw_input.length > 80 ? solve.raw_input.slice(0, 80) + '…' : solve.raw_input,
+        mode: solve.mode,
+        badge: solve.badge,
+        problem_kind: solve.problem_kind,
+      });
+    }
+
+    const result = sessions.map(s => ({
+      id: s.id,
+      name: s.name,
+      source: s.source,
+      created_at: s.created_at,
+      last_solve_at: s.last_solve_at,
+      solve_count: (solvesBySession[s.id] || []).length,
+      solves: solvesBySession[s.id] || [],
+    }));
+
+    res.json({ sessions: result });
+  } catch (err) {
+    console.error('[/sessions] error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch sessions' });
+  }
+});
+
+// ---- PATCH /sessions/:id/rename — rename a session (sets source = 'renamed') ----
+app.patch('/sessions/:id/rename', async (req, res) => {
+  const { id } = req.params;
+  const { name } = req.body;
+
+  // Validate name
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'name is required and must be a non-empty string' });
+  }
+  const trimmedName = name.trim().slice(0, 200);
+
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const user = token ? getUserFromToken(token) : null;
+  const anonSessionId = req.headers['x-session-id'] || null;
+
+  if (!user && !anonSessionId) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    // Fetch session to verify ownership
+    const { data: session, error: fetchErr } = await supabase
+      .from('sessions')
+      .select('id, user_id, anon_session_id')
+      .eq('id', id)
+      .single();
+
+    if (fetchErr || !session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // Ownership check
+    const ownerOk = user
+      ? session.user_id === user.id
+      : session.anon_session_id === anonSessionId;
+
+    if (!ownerOk) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    // Rename
+    const { error: updateErr } = await supabase
+      .from('sessions')
+      .update({ name: trimmedName, source: 'renamed' })
+      .eq('id', id);
+
+    if (updateErr) throw updateErr;
+
+    logEvent({
+      kind: 'session.renamed',
+      severity: 'info',
+      sessionId: id,
+      userId: user?.id || null,
+      buildVersion: BUILD_VERSION,
+      payload: {
+        session_id: id,
+        owner_type: user ? 'authenticated' : 'anonymous',
+        new_name_length: trimmedName.length,
+      },
+      message: 'User renamed a session',
+    });
+
+    res.json({ ok: true, name: trimmedName });
+  } catch (err) {
+    console.error('[/sessions/rename] error:', err.message);
+    res.status(500).json({ error: 'Failed to rename session' });
   }
 });
 
@@ -2846,11 +3006,11 @@ function isBatchAllowed(req) {
   return false;
 }
 
-async function getDailyUsage(userId, sessionId) {
+async function getDailyUsage(userId, anonSessionId) {
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   let query = supabase.from('solves').select('id', { count: 'exact', head: true }).gte('created_at', cutoff);
   if (userId) query = query.eq('user_id', userId);
-  else if (sessionId) query = query.eq('session_id', sessionId);
+  else if (anonSessionId) query = query.eq('anon_session_id', anonSessionId);
   else return 0;
   const { count } = await query;
   return count || 0;
@@ -2868,7 +3028,7 @@ app.post('/batch/solve', async (req, res) => {
   const authHeader = req.headers['authorization'] || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   const user = token ? getUserFromToken(token) : null;
-  const sessionId = req.headers['x-session-id'] || null;
+  const anonSessionId = req.headers['x-session-id'] || null;
 
   // Server-side cap — Pro users only past the gate above, so single cap applies
   if (problems.length > PRO_BATCH_CAP) {
@@ -2877,7 +3037,7 @@ app.post('/batch/solve', async (req, res) => {
 
   // Quota check
   try {
-    const used = await getDailyUsage(user?.id, sessionId);
+    const used = await getDailyUsage(user?.id, anonSessionId);
     const remaining = DAILY_QUOTA - used;
     if (remaining < problems.length) {
       return res.status(429).json({ error: `This batch requires ${problems.length} solves but you have ${Math.max(0, remaining)} remaining today.` });
@@ -2929,7 +3089,7 @@ app.post('/batch/solve', async (req, res) => {
         send({ type: 'problem_completed', index: idx, artifact: result.artifact });
 
         // Fire-and-forget DB log per problem
-        insertSolve({ userId: user?.id || null, sessionId, rawInput: problem, mode: result.safeMode, artifact: result.artifact })
+        insertSolve({ userId: user?.id || null, anonSessionId, rawInput: problem, mode: result.safeMode, artifact: result.artifact })
           .catch(err => console.error('[batch] DB log failed:', err.message));
       } catch (err) {
         summary.failed++;
@@ -2938,7 +3098,7 @@ app.post('/batch/solve', async (req, res) => {
           kind: 'batch.problem_failed',
           severity: 'warn',
           userId: user?.id || null,
-          sessionId,
+          sessionId: anonSessionId,
           buildVersion: BUILD_VERSION,
           payload: { problem_index: idx, mode, error_message: err.message?.slice(0, 200) },
           message: 'Single problem failed during batch solve',

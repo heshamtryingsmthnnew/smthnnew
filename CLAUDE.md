@@ -1224,6 +1224,39 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     small JPEGs slipped under. Client-side base64 (btoa loop) removed. Text and
     PDF/DOCX batch paths preserved. Transport now unified with the composer.
 
+✅ Phase 5a — Session Data Model ✅ COMPLETE
+  - sessions first-class table: id, user_id, anon_session_id, name, source
+    ('auto'|'renamed'|'batch'), created_at, last_solve_at. Indexes on both
+    owner key + last_solve_at for efficient history reads.
+  - solves.session_id renamed to anon_session_id (collision resolution);
+    solves.cluster_session_id FK → sessions.id added.
+  - get_or_create_active_session() Postgres function: advisory-locked via
+    pg_advisory_xact_lock (keyed on owner string) to close the create-create
+    race that FOR UPDATE alone cannot close when no row exists yet. Finds
+    in-window session and bumps last_solve_at; or creates a new session row
+    and returns created=true, boundary_crossed=true/false.
+  - SESSION_CLUSTER_HOURS = 4 in backend/sessionConfig.js — passed as
+    p_cluster_hours parameter to the function, never inlined.
+  - insertSolve() extended: calls RPC, inserts with both anon_session_id +
+    cluster_session_id, then recomputeSessionName() updates sessions.name
+    (dominant problem_kind + date, source='auto' only, never overwrites
+    'renamed' or 'batch'). session.cluster_boundary and
+    session.cross_kind_first_problem events fire-and-forget.
+  - /solve response: session_id field renamed to cluster_session_id.
+    Shape: { correlation_id, solve_id, cluster_session_id }.
+  - GET /sessions: returns owner's sessions with nested solves + metadata
+    (id, name, source, created_at, last_solve_at, solve_count, solves[]).
+    Scoped to authenticated user_id or anon X-Session-Id.
+  - PATCH /sessions/:id/rename: sets name + source='renamed'. Subsequent
+    auto-name recomputes never touch renamed sessions. Fires session.renamed.
+  - /auth/merge-session: now re-owns sessions rows (user_id + anon_session_id)
+    in addition to solves, so merged history reads correctly by user_id.
+  - events.session_id populated with cluster_session_id on all new events.
+  - Three session.* kinds instrumented: session.cluster_boundary,
+    session.cross_kind_first_problem, session.renamed.
+    session.loaded_without_new_solve deferred to frontend (Brief #4/#5).
+  - BUILD_VERSION: "v4.5.0-session-model"
+
 🔲 Phase 5a — Session Model + Sidebar Restructure
 
   JPEG Extraction Bug — RESOLVED (no recurrence):
@@ -1231,61 +1264,6 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     zero rows. Bug did not recur during testing. No fix needed.
   - Diagnostic instrumentation retained for passive monitoring; resolved
     (promoted/kept/deleted) in the pre-Phase-6 debug.observation sweep.
-
-  Session Data Model:
-  - Sessions are FIRST-CLASS ENTITIES. Create a dedicated `sessions` table.
-    This REVERSES the earlier "no separate sessions table in v1" decision —
-    see Pivot 10 and STRATEGIC_DECISIONS.md "Sessions table reversal".
-    Reason: rename persistence + batch sessions with explicit names + auto
-    naming cannot coexist cleanly in a derived-from-solves model. An entity
-    table is the correct model and the one that handles rename today and
-    sharing/export later without refactor.
-  - sessions schema:
-      id            uuid pk
-      owner_key     identifies owner — authenticated user_id when signed in,
-                    else the anonymous browser key. See NAMING COLLISION note.
-      name          text
-      source        'auto' | 'renamed' | 'batch'
-      created_at    timestamptz
-      last_solve_at timestamptz
-    solves table: add cluster_session_id (FK -> sessions.id). See NAMING
-    COLLISION note before writing the migration.
-  - session derivation runs in a Postgres function
-    get_or_create_active_session(owner_key, now, cluster_hours), called from
-    insertSolve(). Uses SELECT ... FOR UPDATE to serialize concurrent inserts.
-    Logic: find the owner's most recent session with last_solve_at within
-    cluster_hours; if found, update its last_solve_at and return its id; else
-    insert a new session row and return the new id. Atomic by construction —
-    eliminates the race where two near-simultaneous solves (double-click,
-    retry, second tab) each create a separate session because the optimistic
-    row lives only in frontend state and is invisible to a JS-layer lookup.
-  - SESSION_CLUSTER_HOURS = 4. Canonical value lives in backend config and is
-    passed into the Postgres function as a parameter — never hardcoded inline
-    in the SQL. Tunable in one place.
-  - Auto-naming: session name = DOMINANT problem_kind across the session + date
-    (e.g. "Calculus, Nov 7"), NOT first-problem kind. Recomputed on each insert
-    by the derivation path, written to sessions.name ONLY while source='auto'.
-    A user rename sets source='renamed' and the name is never auto-overwritten
-    after that. Batch sessions are created with source='batch' and an explicit
-    name (see Batch Entry block) and are never auto-renamed.
-  - PATCH /sessions/:id/rename: sets sessions.name and source='renamed'.
-    Requires auth JWT (authenticated) or matching anonymous owner_key.
-  - /history/list updated: returns sessions with their solves nested, plus
-    session metadata (name, solve count, last_solve_at) read directly from
-    the sessions table.
-
-  NAMING COLLISION — resolve before Brief #3 writes the migration:
-  - The Phase 4 anonymous flow and /auth/merge-session already use a column
-    named session_id on solves to mean the ANONYMOUS BROWSER session
-    (sessionStorage anon_${uuid}, 24h merge window). The Phase 5a clustering
-    session is a DIFFERENT concept. Do not overload one column for both.
-  - Brief #3 must first verify the actual current schema, then disambiguate:
-    recommended — keep the anonymous identifier as anon_session_id (rename the
-    existing column if it is currently session_id) and use cluster_session_id
-    for the new FK. Confirm the exact rename against the live schema and update
-    /auth/merge-session accordingly. This is a blocking pre-step for Brief #3.
-  - Four session event kinds (see Section 17) are registered now and
-    instrumented by Brief #3.
 
   Sidebar Restructure + Optimistic Insert (ship as one unit — coupled):
   - Three-level hierarchy: time bucket > session > problem.
@@ -1705,6 +1683,35 @@ Frontend (/frontend/src/app/page.tsx)
     buf.toString('base64') server-side for the Claude vision call.
   - BUILD_VERSION: "v4.4.2-batch-image-transport"
 
+Phase 5a — Session Data Model (new)
+  - backend/sessionConfig.js: SESSION_CLUSTER_HOURS = 4 (named constant,
+    passed as p_cluster_hours to the Postgres function).
+  - Database (post-migration): sessions table (id, user_id, anon_session_id,
+    name, source, created_at, last_solve_at). solves.session_id renamed to
+    anon_session_id; solves.cluster_session_id UUID FK → sessions.id.
+    get_or_create_active_session() function: advisory-locked per owner key.
+  - supabase.js insertSolve(): accepts anonSessionId param (renamed from
+    sessionId). Calls get_or_create_active_session RPC, inserts solve with
+    cluster_session_id, calls recomputeSessionName(). Fires
+    session.cluster_boundary and session.cross_kind_first_problem events.
+  - supabase.js recomputeSessionName(sessionId): queries session source,
+    reads dominant problem_kind across session's solves, writes
+    "{KindLabel}, {Mon DD}" to sessions.name only when source='auto'.
+  - supabase.js kindDisplayLabel(kind): maps problem_kind → display label.
+  - /solve response: session_id → cluster_session_id. Both success and error
+    paths updated. Shape: { correlation_id, solve_id, cluster_session_id }.
+  - GET /sessions: owner-scoped sessions with nested solves + solve_count.
+    Auth: JWT user_id or X-Session-Id anon key.
+  - PATCH /sessions/:id/rename: ownership-verified rename, sets source=
+    'renamed', fires session.renamed. Validated: non-empty, 200-char cap.
+  - /auth/merge-session: now re-owns sessions rows in addition to solves.
+    Sets sessions.user_id = auth user, anon_session_id = null.
+  - /history/list: UNTOUCHED — response shape preserved, still functional.
+  - getDailyUsage: session_id → anon_session_id column.
+  - All logEvent sessionId params in /solve + /batch pass cluster or anon
+    id as appropriate.
+  - BUILD_VERSION: "v4.5.0-session-model"
+
 Phase 5 — Batch Solve (new)
   - backend: solveOne(rawInput, mode) standalone async function — full solve
     path (prompts, model call, JSON parse, verification, artifact build).
@@ -2121,9 +2128,11 @@ Current kinds:
 - Extract: extract.no_problems_found, extract.unsupported_mimetype, extract.exception
 - Batch: batch.problem_failed, batch.extract_failed
 - Auth/history: auth.merge_failed, history.revalidation_failed
-- Session (Phase 5a — registered now, instrumented in Brief #3):
-  session.renamed, session.loaded_without_new_solve,
-  session.cross_kind_first_problem, session.cluster_boundary
+- Session (Phase 5a):
+  session.cluster_boundary ✅ instrumented (insertSolve — boundary_crossed)
+  session.cross_kind_first_problem ✅ instrumented (insertSolve — first_kind ≠ dominant)
+  session.renamed ✅ instrumented (PATCH /sessions/:id/rename)
+  session.loaded_without_new_solve — registered, uninstrumented (frontend, Brief #4/#5)
 - Frontend: frontend.katex_render_fail, frontend.desmos_init_fail, frontend.sse_stream_break
 - Debug: debug.observation (testing-phase only, must be removed before Phase 6)
 
