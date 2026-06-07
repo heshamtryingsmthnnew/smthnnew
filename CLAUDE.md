@@ -1296,6 +1296,40 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     events, calls logEvent fire-and-forget. Auth optional (Bearer or X-Session-Id).
   - BUILD_VERSION: "v4.6.0-sidebar-optimistic"
 
+✅ Phase 5a — Polish 01 ✅ COMPLETE
+  - Fixed double "solving…" pending row: removed the redundant bucket-level
+    pending render (pendingInBucket). Each pending solve now renders in
+    exactly one place — nested under its session when optimisticSessionId
+    is set, or as a standalone row when null (no active session yet).
+  - Sidebar default expansion changed: all time buckets
+    (today/yesterday/week/older) expanded on launch; sessions default to
+    collapsed (dropped the "Today's sessions auto-expand" rule). User drills
+    in on demand. TOGGLE_BUCKET/TOGGLE_SESSION still work both ways.
+  - Rename affordance: kebab (three-dot) icon replaced with a pencil icon
+    that directly triggers inline rename. Same PATCH /sessions/:id/rename +
+    SESSION_RENAMED flow, unchanged. Delete action deferred to a future brief.
+  - Solution-view action cluster (Proof details | Advanced verification |
+    View graph) no longer ghosts on hover — always opacity-100, always
+    present. shouldGhost no longer drives opacity, only the framing
+    border-t/pt-3 treatment when the split is showing.
+  - Suppressed the `checked` one-line message flicker during the first-solve
+    CAS auto-fire: user_reason now hidden while advancedVerifResult is null
+    AND wedgeActive is true (in addition to the existing
+    !advancedVerifResult gate), so it never flashes before the CAS result lands.
+  - Removed the redundant "highlight Advanced Verification button" CTA
+    (highlightAdvancedBtn state + ring/pulse treatment). RUN_ADVANCED_VERIFICATION
+    suggestion now calls handleAdvancedVerification() directly instead of
+    drawing attention to an always-visible button.
+  - backend/artifact.js buildUserReason(): `checked`/unavailable copy reframed
+    (Option B) from "Deterministic verification not available for this problem
+    type. Use Advanced Verification for a deeper check." to "Step-by-step proof
+    shown. Independent symbolic verification available." verified/
+    discrepancy_detected/physics reasons untouched.
+  - STRATEGIC_DECISIONS.md: logged the first-solve CAS auto-fire as a deliberate,
+    scoped exception to the locked "Tier 3 CAS never auto-fires" rule (RESOLVED
+    — First-solve CAS auto-fire).
+  - BUILD_VERSION: "v4.6.1-polish"
+
 🔲 Phase 5a — Session Tab + Batch Panel Refactor (remaining)
 
   JPEG Extraction Bug — RESOLVED (no recurrence):
@@ -1703,7 +1737,7 @@ Phase 5a — Session Data Model (new)
     Additive — existing callers unaffected.
   - POST /events: new endpoint for frontend-originated events. Calls logEvent
     fire-and-forget. Auth optional (Bearer or X-Session-Id header).
-  - BUILD_VERSION: "v4.6.0-sidebar-optimistic"
+  - BUILD_VERSION: "v4.6.1-polish"
 
 Phase 5a — Sidebar Restructure + Optimistic Insert (new)
   - frontend/src/app/state/sessionReducer.ts: complete reducer module.
@@ -1729,8 +1763,9 @@ Phase 5a — Sidebar Restructure + Optimistic Insert (new)
     non-active session (cluster_session_id !== activeSessionId).
   - Sidebar: flex flex-col h-screen + sessions region flex-1 min-h-0
     overflow-y-auto. Three-level hierarchy: bucket → session → problem.
-    Today auto-expanded; others collapsed. Bucket/session toggles via reducer.
-    Session rows: batch icon for source==='batch'. Kebab rename on hover.
+    All time buckets expanded by default; sessions default to collapsed —
+    user drills in on demand (Polish 01). Bucket/session toggles via reducer.
+    Session rows: batch icon for source==='batch'. Pencil rename on hover (Polish 01).
     Pending rows: "solving…" pulse under their session.
     Real solve rows: badge dot + raw_input_preview + relativeTime.
     Active solve highlighted bg-white/[0.05].

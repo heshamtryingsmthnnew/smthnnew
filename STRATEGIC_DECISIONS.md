@@ -393,6 +393,20 @@ Do not act on these before the 30-day trigger in OPEN QUESTION 1. Instrument now
 decide later.
 
 ---
+## RESOLVED — First-solve CAS auto-fire (deliberate exception to "Tier 3 never auto-fires")
+
+Advanced verification (CAS) auto-fires once on the first solve of a page session
+(gated by !hasSeenAdvancedVerification). Intentional onboarding/demo to show the
+feature's value and drive Pro intent. It does NOT count against the free 3/month
+manual taste (advancedVerifUsed unchanged).
+
+This is a scoped exception to the locked "Tier 3 CAS never auto-fires" rule, which
+otherwise holds everywhere. Cost note: keyed to page session, so it re-fires on each
+page reload (cost scales with page loads, not users). Acceptable pre-launch; Phase 6
+replaces it with server-side per-user monthly limits, which becomes the real cost
+control. Revisit if pre-launch Wolfram cost becomes material.
+
+---
 ## REVISION LOG
 
 - **Initial draft** — Logged after conversation about moving from "validated solver" to potential "workflow environment." Decided to defer all expansion decisions until post-Phase 5 conversion data exists.

@@ -307,7 +307,7 @@ function buildUserReason({ badge, mode, normalizedKind, verification }) {
     return "I couldn't extract a clean math expression from the input.";
   }
 
-  return "Deterministic verification not available for this problem type. Use Advanced Verification for a deeper check.";
+  return "Step-by-step proof shown. Independent symbolic verification available.";
 }
 
 function buildSuggestions(reasonCode) {

@@ -422,7 +422,6 @@ export default function Home() {
   const [showStickyBar, setShowStickyBar] = useState(false);
 
   // Advanced verification UX
-  const [highlightAdvancedBtn, setHighlightAdvancedBtn] = useState(false);
   const [advancedVerifFired, setAdvancedVerifFired] = useState(false);
 
   // Session reducer — single source of truth for sidebar + history + session navigation
@@ -1169,8 +1168,7 @@ export default function Home() {
         scrollToComposer();
         break;
       case 'RUN_ADVANCED_VERIFICATION':
-        setHighlightAdvancedBtn(true);
-        setTimeout(() => setHighlightAdvancedBtn(false), 2000);
+        handleAdvancedVerification();
         break;
       case 'SIMPLIFY_WORDING':
         scrollToComposer();
@@ -1493,11 +1491,7 @@ export default function Home() {
                 {/* Time bucket sections */}
                 {(Object.keys(BUCKET_LABELS) as BucketKey[]).map(bucketKey => {
                   const sessionsInBucket = buckets[bucketKey];
-                  const pendingInBucket = pendingSolvesArr.filter(p =>
-                    p.optimisticSessionId !== null &&
-                    sessionsInBucket.some(s => s.id === p.optimisticSessionId)
-                  );
-                  if (sessionsInBucket.length === 0 && pendingInBucket.length === 0) return null;
+                  if (sessionsInBucket.length === 0) return null;
                   const isBucketExpanded = sState.expandedBuckets[bucketKey];
                   return (
                     <div key={bucketKey} className="mb-1">
@@ -1518,14 +1512,6 @@ export default function Home() {
 
                       {isBucketExpanded && (
                         <>
-                          {/* Pending solves whose optimistic session is in this bucket */}
-                          {pendingInBucket.map(pending => (
-                            <div key={pending.nonce} className="ml-3 flex items-center gap-2 py-1.5 pl-3 pr-3 opacity-50">
-                              <div className="h-[6px] w-[6px] flex-shrink-0 animate-pulse rounded-full bg-zinc-500" />
-                              <span className="truncate text-[13px] italic text-zinc-500">solving…</span>
-                            </div>
-                          ))}
-
                           {/* Session rows */}
                           {sessionsInBucket.map(session => {
                             const sessionSolves = getSessionSolves(sState, session.id);
@@ -1585,7 +1571,7 @@ export default function Home() {
                                   {!isRenaming && (
                                     <span className="ml-1 flex-shrink-0 text-[11px] text-zinc-600">{session.solve_count}</span>
                                   )}
-                                  {/* Kebab rename button — revealed on row hover */}
+                                  {/* Pencil rename button — revealed on row hover */}
                                   {!isRenaming && (
                                     <button
                                       type="button"
@@ -1597,10 +1583,9 @@ export default function Home() {
                                       className="ml-1 hidden flex-shrink-0 rounded p-0.5 text-zinc-600 transition hover:text-zinc-300 group-hover:block"
                                       title="Rename session"
                                     >
-                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-                                        <circle cx="5" cy="12" r="2" />
-                                        <circle cx="12" cy="12" r="2" />
-                                        <circle cx="19" cy="12" r="2" />
+                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M12 20h9" />
+                                        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
                                       </svg>
                                     </button>
                                   )}
@@ -2087,8 +2072,8 @@ export default function Home() {
                   </div>
                 )}
 
-                {/* One-line verification summary — hidden once advanced verification runs */}
-                {artifact.verification.user_reason && !advancedVerifResult && (
+                {/* One-line verification summary — hidden once advanced verification runs or while one is in flight */}
+                {artifact.verification.user_reason && !advancedVerifResult && !wedgeActive && (
                   <div className="mt-3 text-sm leading-6 text-zinc-300">
                     {artifact.verification.user_reason}
                   </div>
@@ -2101,15 +2086,9 @@ export default function Home() {
                   </p>
                 )}
 
-                {/* Action cluster — always visible when no split; ghosts on hover when split is showing */}
-                <div className={`flex items-center gap-3 text-xs transition-opacity duration-200 ${
-                  shouldGhost
-                    ? `mt-0 border-t border-white/[0.06] pt-3 ${
-                        showProofDetails
-                          ? 'opacity-100 text-zinc-500'
-                          : 'opacity-0 text-zinc-500 group-hover:opacity-100'
-                      }`
-                    : 'mt-4 opacity-100 text-zinc-500'
+                {/* Action cluster — always visible, never ghosts */}
+                <div className={`flex items-center gap-3 text-xs text-zinc-500 ${
+                  shouldGhost ? 'mt-0 border-t border-white/[0.06] pt-3' : 'mt-4'
                 }`}>
                   <button
                     type="button"
@@ -2126,9 +2105,7 @@ export default function Home() {
                     className={`transition ${
                       advancedVerifFired
                         ? 'opacity-40 cursor-not-allowed pointer-events-none'
-                        : highlightAdvancedBtn
-                          ? 'text-zinc-100 ring-1 ring-white/20 rounded px-1'
-                          : 'hover:text-zinc-200'
+                        : 'hover:text-zinc-200'
                     }`}
                   >
                     {advancedVerifLoading ? 'Checking...' : artifact.mode === 'physics' ? 'Cross-method audit' : 'Advanced verification'}

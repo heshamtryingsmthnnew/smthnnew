@@ -86,7 +86,7 @@ export const initialState: State = {
   activeSessionId: null,
   displayedSessionId: null,
   displayedSolveId: null,
-  expandedBuckets: { today: true, yesterday: false, week: false, older: false },
+  expandedBuckets: { today: true, yesterday: true, week: true, older: true },
   expandedSessions: {},
   sidebarCollapsed: false,
   tabMicrocopy: null,
@@ -264,13 +264,11 @@ export function getSessionBucket(lastSolveAt: string, now: Date = new Date()): B
   return 'older';
 }
 
-// Effective expansion: explicit override wins; otherwise Today sessions auto-expand.
+// Effective expansion: explicit override wins; default is collapsed.
 export function isSessionExpanded(state: State, sessionId: string): boolean {
   const explicit = state.expandedSessions[sessionId];
   if (explicit !== undefined) return explicit;
-  const session = state.sessionsById[sessionId];
-  if (!session) return false;
-  return getSessionBucket(session.last_solve_at) === 'today';
+  return false;
 }
 
 // Sessions grouped by bucket, each bucket sorted newest-first by last_solve_at.
