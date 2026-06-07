@@ -317,11 +317,11 @@ function buildSuggestions(reasonCode) {
       return [
         {
           action: "OPEN_MATH_KEYBOARD",
-          label: "Try the math keyboard for cleaner input.",
+          label: "Use the math keyboard",
         },
         {
           action: "SHOW_FORMAT_EXAMPLE",
-          label: "Try rewriting the problem with clearer formatting.",
+          label: "See formatting tips",
         },
       ];
 
@@ -329,29 +329,22 @@ function buildSuggestions(reasonCode) {
       return [
         {
           action: "SIMPLIFY_WORDING",
-          label: "Try specifying the domain or constraints more clearly.",
+          label: "Specify the domain or constraints",
         },
       ];
 
     case "VALIDATION_FAILED":
       return [
         {
-          action: "RUN_ADVANCED_VERIFICATION",
-          label: "Run advanced verification.",
-        },
-        {
           action: "SHOW_FORMAT_EXAMPLE",
-          label: "Double-check the formatting of the problem.",
+          label: "Check the problem formatting",
         },
       ];
 
     case "VALIDATION_INCONCLUSIVE":
-      return [
-        {
-          action: "RUN_ADVANCED_VERIFICATION",
-          label: "Run advanced verification for a deeper check.",
-        },
-      ];
+      // checked state — covered by the one-line reason + always-visible
+      // Advanced verification toolbar button. No chip needed.
+      return [];
 
     case "UNSUPPORTED_PROBLEM_TYPE":
       return [];

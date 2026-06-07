@@ -259,6 +259,32 @@ function getBadgeClasses(badge: Artifact['verification']['badge']) {
   }
 }
 
+function getSuggestionIcon(action: string) {
+  switch (action) {
+    case 'OPEN_MATH_KEYBOARD':
+      return (
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="2" y="6" width="20" height="12" rx="2" />
+          <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12" />
+        </svg>
+      );
+    case 'SHOW_FORMAT_EXAMPLE':
+      return (
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="4 7 4 4 20 4 20 7" />
+          <line x1="9" y1="20" x2="15" y2="20" />
+          <line x1="12" y1="4" x2="12" y2="20" />
+        </svg>
+      );
+    default:
+      return (
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 18l6-6-6-6" />
+        </svg>
+      );
+  }
+}
+
 function getCertaintyLabel(certainty: Artifact['verification']['certainty']) {
   switch (certainty) {
     case 'confirmed':
@@ -1167,9 +1193,6 @@ export default function Home() {
         setShowFormatHint(true);
         scrollToComposer();
         break;
-      case 'RUN_ADVANCED_VERIFICATION':
-        handleAdvancedVerification();
-        break;
       case 'SIMPLIFY_WORDING':
         scrollToComposer();
         break;
@@ -1270,9 +1293,7 @@ export default function Home() {
     return null;
   })();
 
-  const displayedSuggestions = artifact?.suggestions.filter(
-    (s) => !(s.action === 'RUN_ADVANCED_VERIFICATION' && !!advancedVerifResult)
-  ) ?? [];
+  const displayedSuggestions = artifact?.suggestions ?? [];
 
   const wedgeActive = wedgePhase !== 'idle' && !!artifact;
   const shouldGhost = wedgePhase === 'done' && splitKind !== null;
@@ -2166,8 +2187,9 @@ export default function Home() {
                         key={`${s.action}-${i}`}
                         type="button"
                         onClick={() => handleSuggestion(s.action)}
-                        className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-xs text-zinc-300 transition hover:bg-white/[0.08]"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.10] bg-white/[0.05] px-3 py-1.5 text-xs text-zinc-300 transition hover:bg-white/[0.07] hover:border-white/[0.18] hover:text-zinc-100"
                       >
+                        {getSuggestionIcon(s.action)}
                         {s.label}
                       </button>
                     ))}

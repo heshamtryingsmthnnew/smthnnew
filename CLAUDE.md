@@ -1330,6 +1330,30 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     — First-solve CAS auto-fire).
   - BUILD_VERSION: "v4.6.1-polish"
 
+✅ Phase 5a — Polish 02 ✅ COMPLETE
+  - Suggestion chips deduped against the always-visible Advanced verification
+    toolbar button (v4.6.1): no chip anywhere emits RUN_ADVANCED_VERIFICATION.
+    backend/artifact.js buildSuggestions() confirmed already at the target
+    state — VALIDATION_INCONCLUSIVE returns [] (commented to explain why:
+    the `checked` state is covered by the one-line reason + toolbar button),
+    VALIDATION_FAILED returns only "Check the problem formatting",
+    PARSER_FAILED/PARSER_AMBIGUOUS return "Use the math keyboard" +
+    "See formatting tips", DOMAIN_AMBIGUITY rewords to "Specify the domain
+    or constraints" (confirmed UNREACHABLE — no path in
+    mapVerificationToReasonCode returns it; case left in place, harmless).
+  - Dead RUN_ADVANCED_VERIFICATION code removed from frontend: the
+    handleSuggestion('RUN_ADVANCED_VERIFICATION') case and the
+    displayedSuggestions filter that special-cased it (backend never emitted
+    this action — both were unreachable dead code, removed rather than kept).
+  - Chips restyled distinct from the `checked` status badge: rounded-md
+    (badge stays rounded-full), leading monochrome line icon per action via
+    new getSuggestionIcon(action) helper (keyboard glyph for
+    OPEN_MATH_KEYBOARD, document/format glyph for SHOW_FORMAT_EXAMPLE,
+    chevron fallback for others), border-white/[0.10] bg-white/[0.05]
+    text-zinc-300 → hover bg-white/[0.07] border-white/[0.18] text-zinc-100,
+    px-3 py-1.5 text-xs. Badge styling untouched.
+  - BUILD_VERSION: "v4.6.2-suggestion-cleanup"
+
 🔲 Phase 5a — Session Tab + Batch Panel Refactor (remaining)
 
   JPEG Extraction Bug — RESOLVED (no recurrence):
@@ -1604,8 +1628,15 @@ Frontend (/frontend/src/app/page.tsx)
     card (200ms transition). Stays opacity-100 when showProofDetails is true.
     Advanced verification button: disabled={!!advancedVerifResult} with
     text-zinc-700 cursor-not-allowed pointer-events-none when used.
-  - Suggestion chips: displayedSuggestions filters RUN_ADVANCED_VERIFICATION
-    when advancedVerifResult is populated.
+  - Suggestion chips (Polish 02): never duplicate the always-visible Advanced
+    verification toolbar button — backend emits only OPEN_MATH_KEYBOARD
+    ("Use the math keyboard"), SHOW_FORMAT_EXAMPLE ("See formatting tips" /
+    "Check the problem formatting" depending on reason code), and
+    SIMPLIFY_WORDING (unreachable, DOMAIN_AMBIGUITY never returned).
+    displayedSuggestions = artifact?.suggestions directly — no filter needed.
+    Styled distinct from the `checked` badge: rounded-md, leading icon via
+    getSuggestionIcon(action), border/hover treatment that reads as an
+    action button rather than a status pill.
   - Math keyboard: symbol overlay, insert at cursor, Σ toggle
   - Format hint: mode-aware panel, renders above composer on showFormatHint
   - Advanced verification: auto-fires on first solve (hasSeenAdvancedVerification
