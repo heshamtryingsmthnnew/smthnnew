@@ -602,6 +602,13 @@ export default function Home() {
     return () => observer.disconnect();
   }, [artifact]);
 
+  // tabMicrocopy: auto-dismiss after 4s; also cleared by arrow nav and DISPLAY_SOLVE
+  useEffect(() => {
+    if (!sState.tabMicrocopy) return;
+    const t = setTimeout(() => dispatch({ type: 'CLEAR_TAB_MICROCOPY' }), 4000);
+    return () => clearTimeout(t);
+  }, [sState.tabMicrocopy]);
+
   // Auto-clear extract error after 4 seconds
   useEffect(() => {
     if (!extractError) return;
@@ -718,6 +725,19 @@ export default function Home() {
     } catch (e) {
       console.warn('[history] load failed', e);
     }
+  };
+
+  // Tab nav — mirrors sidebar click pattern; reuses loadHistoricalSolve exactly
+  const handleTabNav = (direction: 'prev' | 'next') => {
+    if (!sState.displayedSessionId || !sState.displayedSolveId) return;
+    const solves = getSessionSolves(sState, sState.displayedSessionId);
+    const i = solves.findIndex(s => s.id === sState.displayedSolveId);
+    if (i === -1) return;
+    const target = direction === 'prev' ? i + 1 : i - 1;
+    if (target < 0 || target >= solves.length) return;
+    const targetSolveId = solves[target].id;
+    dispatch({ type: 'CLEAR_TAB_MICROCOPY' });
+    loadHistoricalSolve(targetSolveId);
   };
 
   const handleSignIn = async (e: FormEvent) => {
@@ -1740,10 +1760,112 @@ export default function Home() {
         />
       </aside>
 
+      {/* Session Tab — top-center, always visible */}
+      {(() => {
+        const displayedSession = sState.displayedSessionId
+          ? sState.sessionsById[sState.displayedSessionId]
+          : null;
+        const displayedSolves = sState.displayedSessionId
+          ? getSessionSolves(sState, sState.displayedSessionId)
+          : [];
+        const showArrows = displayedSolves.length >= 2;
+        const currentIdx = sState.displayedSolveId
+          ? displayedSolves.findIndex(s => s.id === sState.displayedSolveId)
+          : -1;
+        const isOldest = currentIdx === displayedSolves.length - 1;
+        const isNewest = currentIdx === 0;
+
+        return (
+          <div
+            className="fixed top-0 z-[26] flex h-9 items-center gap-1"
+            style={{
+              left: `calc(50% + ${contentOffset}px)`,
+              transform: 'translateX(-50%)',
+              transition: 'left 200ms',
+            }}
+          >
+            {/* Prev (older) arrow */}
+            {showArrows && (
+              <button
+                type="button"
+                disabled={isOldest}
+                onClick={() => handleTabNav('prev')}
+                className="flex h-6 w-6 items-center justify-center rounded text-zinc-600 transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-25"
+                aria-label="Older solve"
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <path d="M6.5 2L3.5 5L6.5 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            )}
+
+            {/* Tab frame */}
+            <div className="relative flex min-w-[120px] max-w-[260px] items-center justify-center rounded border border-white/[0.06] px-3 h-[26px]">
+              <AnimatePresence mode="wait" initial={false}>
+                {!displayedSession ? (
+                  <motion.span
+                    key="watermark"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className={`${dmSerifDisplay.className} select-none text-[13px] text-white/[0.10]`}
+                  >
+                    Ergo.
+                  </motion.span>
+                ) : (
+                  <motion.span
+                    key="title"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="truncate text-[12px] text-zinc-400"
+                  >
+                    {displayedSession.name || '—'}
+                  </motion.span>
+                )}
+              </AnimatePresence>
+
+              {/* tabMicrocopy — one-shot transient annotation */}
+              <AnimatePresence>
+                {sState.tabMicrocopy === 'started_new_session' && (
+                  <motion.span
+                    key="microcopy"
+                    initial={{ opacity: 0, y: -2 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="absolute -bottom-5 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] text-zinc-600"
+                  >
+                    new session
+                  </motion.span>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Next (newer) arrow */}
+            {showArrows && (
+              <button
+                type="button"
+                disabled={isNewest}
+                onClick={() => handleTabNav('next')}
+                className="flex h-6 w-6 items-center justify-center rounded text-zinc-600 transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-25"
+                aria-label="Newer solve"
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <path d="M3.5 2L6.5 5L3.5 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Sticky answer bar — appears when answer box scrolls out of view */}
       {artifact && (
         <div
-          className={`fixed top-0 right-0 z-[25] h-9 transition-all duration-300 ${
+          className={`fixed top-9 right-0 z-[25] h-9 transition-all duration-300 ${
             showStickyBar
               ? 'translate-y-0 opacity-100 pointer-events-auto'
               : '-translate-y-full opacity-0 pointer-events-none'
@@ -1812,8 +1934,8 @@ export default function Home() {
         <div className="mx-auto mt-3 h-px w-8 rounded-full bg-white/20" />
       </div>
 
-      {/* Scrollable content — margin clears the fixed left panel */}
-      <div className="relative z-10 px-6 pt-8 pb-[280px]" style={{ marginLeft: sidebarWidth, transition: 'margin-left 200ms' }}>
+      {/* Scrollable content — margin clears the fixed left panel; pt-20 clears session tab + sticky bar */}
+      <div className="relative z-10 px-6 pt-20 pb-[280px]" style={{ marginLeft: sidebarWidth, transition: 'margin-left 200ms' }}>
 
         {/* Dot pattern — content area only */}
         <div

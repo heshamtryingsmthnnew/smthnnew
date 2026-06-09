@@ -187,8 +187,22 @@ export function sessionReducer(state: State, action: Action): State {
       };
     }
 
-    case 'TAB_NAV_SOLVE':
-      return state; // Brief #5 wires the handler
+    case 'TAB_NAV_SOLVE': {
+      if (!state.displayedSessionId || !state.displayedSolveId) return state;
+      const solves = getSessionSolves(state, state.displayedSessionId);
+      const i = solves.findIndex(s => s.id === state.displayedSolveId);
+      if (i === -1) return state;
+      // newest-first list: prev = older = i+1, next = newer = i-1
+      const target = action.direction === 'prev' ? i + 1 : i - 1;
+      if (target < 0 || target >= solves.length) return state; // no-op at boundary
+      const targetSolve = solves[target];
+      return {
+        ...state,
+        displayedSolveId: targetSolve.id,
+        displayedSessionId: targetSolve.cluster_session_id,
+        // activeSessionId intentionally NOT changed — loading old work is view-only
+      };
+    }
 
     case 'CLEAR_TAB_MICROCOPY':
       return { ...state, tabMicrocopy: null };

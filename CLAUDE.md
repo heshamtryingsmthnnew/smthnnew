@@ -1354,22 +1354,39 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     px-3 py-1.5 text-xs. Badge styling untouched.
   - BUILD_VERSION: "v4.6.2-suggestion-cleanup"
 
-🔲 Phase 5a — Session Tab + Batch Panel Refactor (remaining)
+✅ Phase 5a — Top-Center Session Tab (Brief #5) ✅ COMPLETE
+  - TAB_NAV_SOLVE wired in sessionReducer.ts: index math over getSessionSolves
+    (newest-first). prev = i+1 (older), next = i-1 (newer). No-op at both
+    boundaries. activeSessionId never mutated — invariant enforced in reducer.
+  - handleTabNav() in page.tsx: computes target solve id, dispatches
+    CLEAR_TAB_MICROCOPY, calls loadHistoricalSolve(targetSolveId) — mirrors
+    sidebar click path exactly, no duplicate fetch logic.
+  - Session tab JSX: fixed top-0 z-[26], centered in content area via
+    left: calc(50% + contentOffset), translateX(-50%). Always in DOM.
+    Empty state: DM Serif Display "Ergo." at 10% opacity inside a subtle
+    border-white/[0.06] frame. After first solve: AnimatePresence 200ms
+    content swap to session name in Geist Sans zinc-400.
+    Arrows (prev/next SVG chevrons) render only when displayed session
+    has ≥2 solves. Disabled (opacity-25 + cursor-not-allowed) at boundaries.
+    Label source = displayedSessionId (not activeSessionId) — tab reads what
+    the workspace is showing, not where new solves land.
+  - tabMicrocopy 'started_new_session': AnimatePresence annotation below tab
+    frame. Auto-dismisses after 4s via useEffect → CLEAR_TAB_MICROCOPY.
+    Also cleared by arrow nav (CLEAR_TAB_MICROCOPY before load call) and
+    on next DISPLAY_SOLVE (because SOLVE_RECONCILED updates displayedSessionId,
+    resetting the microcopy condition). Never re-fires on reload.
+  - Sticky answer bar shifted from top-0 to top-9 (sits below session tab).
+  - Scrollable content area pt-8 → pt-20 (clears session tab + sticky bar).
+  - scripts/verify/sessionTab.test.js: 14 assertions covering AC 1-3
+    (index math, boundary no-ops, activeSessionId invariant, tabMicrocopy
+    CLEAR and initial null). scripts/verify/run.js: suite runner (14/14 pass).
+  - BUILD_VERSION: "v4.7.0-session-tab"
 
   JPEG Extraction Bug — RESOLVED (no recurrence):
   - events table queried for debug.observation tagged jpeg_bug_2026_05:
     zero rows. Bug did not recur during testing. No fix needed.
   - Diagnostic instrumentation retained for passive monitoring; resolved
     (promoted/kept/deleted) in the pre-Phase-6 debug.observation sweep.
-
-  Top-Center Session Tab (Brief #5):
-  - See Section 5 (Layout Blueprint) for full visual spec.
-  - Session tab reflects the active session (current 4-hour window).
-    When user loads an old solve, tab shows that solve's session name
-    but new solves still fire into the current session.
-  - Reducer slices reserved: tabMicrocopy ('started_new_session' | null),
-    TAB_NAV_SOLVE action (no-op stub). Brief #5 wires both.
-  - Sticky answer bar shifts from top-0 to top-9 when session tab lands.
 
   Batch Entry + Result Panel Refactor (Brief #6):
   - All batch UI inherits the Pro-only gate from Pre-5a Batch Gating Correction.
@@ -1705,11 +1722,13 @@ Frontend (/frontend/src/app/page.tsx)
   - currentCorrelationId state captures correlation_id returned by /solve.
     Threaded into auto-fire /verify call and manual runAdvancedVerification call.
     Cleared by handleReset. Future-use for frontend event logging.
-  - PENDING Phase 5a change: sticky answer bar currently fixed at top-0
-    (Polish Brief 03b). Must shift to top-9 when session tab is implemented
-    to sit below the session tab strip. Solution view pt-20 required.
-    Do not implement this sticky bar shift in isolation — it ships as part
-    of Phase 5a alongside the session tab.
+  - Session tab: fixed top-0 z-[26], always in DOM, centered in content area.
+    Reads from displayedSessionId (not activeSessionId). Arrows (prev/next)
+    appear at ≥2 solves, disabled at boundaries. handleTabNav() calls
+    loadHistoricalSolve() — no duplicate fetch logic. tabMicrocopy
+    'started_new_session' auto-dismisses in 4s via useEffect. Sticky answer
+    bar shifted to top-9; scrollable content area pt-20.
+    BUILD_VERSION: "v4.7.0-session-tab"
   - Image-file handling: shared acquireFile() helper (module-level function)
     used by both the main composer and the batch modal Input stage
     (paste/drop/input). Endpoints remain distinct (/extract-problem vs
@@ -2298,8 +2317,9 @@ Prints recent events with aggregations by kind and severity.
 ## Open Items / Carry-Forward (update as resolved — the repo, not chat memory, carries state)
 
 - [OPEN] POST /events hardening — allowlist frontend-emittable kinds, derive identity
-  server-side (never trust the client body), cap payload size, rate-limit. Target:
-  fold into Brief #5.
+  server-side (never trust the client body), cap payload size, rate-limit. Was split
+  out of Brief #5 (Tier-B surface, own brief). Frontend continues calling POST /events
+  as-is until that brief ships.
 - [PARKED] Deeper verification-framing question — whether the `checked` badge label
   and the ~60% Tier-1 coverage gap need rethinking. Reopen trigger: free tier still
   reads as untrustworthy after living with the Option-B copy. (Also in
