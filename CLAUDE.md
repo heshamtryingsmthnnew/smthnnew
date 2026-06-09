@@ -1974,6 +1974,42 @@ Phase 4 — History + Library + Auth (new)
 - When adding a new structured event kind, register it in backend/eventKinds.js
   AND document it in CLAUDE.md Section 17 in the same commit.
 ---
+## Principles & Learnings (banked judgment — apply without re-deriving)
+
+1. AI never checks AI for math correctness. Verification is deterministic (Tier 1
+   math.js) or CAS (Tier 3 Wolfram). The physics cross-method audit is an audit
+   signal, never a correctness claim.
+2. The normalization layer is the PRIMARY verification input; raw input is fallback
+   only — never the other way around.
+3. Binary uploads (images, PDFs, DOCX) are sent multipart/form-data via multer, never
+   base64-in-JSON. Base64 inflates ~33% and exceeds Express body-parser limits on
+   larger files; the failure presents as a silent size error, not a format error.
+4. Verification copy uses value framing: lead with what the user has (the visible
+   step-by-step proof — the slogan), and frame CAS as an available independent
+   confirmation, never as a missing safeguard or a deficiency. Never claim
+   verification that did not run — uncertainty stays visible via the badge
+   color/label, but the wording never reads as failure.
+5. Suggestion chips never duplicate an always-visible toolbar control. Chips exist
+   only for recovery actions the toolbar cannot perform (math keyboard, formatting
+   help). One place per idea.
+6. Sessions auto-cluster by time (SESSION_CLUSTER_HOURS = 4). Manual session
+   creation/management is deferred (OPEN QUESTION 2). Do not drift toward manual
+   workspace switching.
+7. Two-pointer state model: activeSessionId (server-authoritative, where new solves
+   attach) and displayedSessionId (what the workspace renders) are distinct fields.
+   Loading old work never moves activeSessionId.
+8. Cluster-session derivation is atomic via a Postgres advisory lock
+   (get_or_create_active_session). SELECT ... FOR UPDATE alone does NOT close the
+   create-create race (no row exists to lock when the session is new).
+9. First-solve CAS auto-fire is a deliberate, documented exception to
+   "Tier 3 CAS never auto-fires" — a page-session-scoped onboarding demo, uncounted
+   against the free manual allowance. Tier 3 never auto-fires anywhere else.
+10. Each brief is a standalone commit (never bundle). Decisions are locked in
+    CLAUDE.md/STRATEGIC_DECISIONS before any code. With no production clients,
+    response shapes change additively and fields are renamed for clarity rather than
+    overloaded with new meaning.
+
+---
 ## 12. Library & History (Locked)
 
 ### The library
@@ -2257,3 +2293,52 @@ real volume data. Errors never sampled.
 ### Query
 `node backend/scripts/read-events.js [--kind=X] [--severity=Y] [--correlation=Z] [--since=ISO] [--limit=N]`
 Prints recent events with aggregations by kind and severity.
+
+---
+## Open Items / Carry-Forward (update as resolved — the repo, not chat memory, carries state)
+
+- [OPEN] POST /events hardening — allowlist frontend-emittable kinds, derive identity
+  server-side (never trust the client body), cap payload size, rate-limit. Target:
+  fold into Brief #5.
+- [PARKED] Deeper verification-framing question — whether the `checked` badge label
+  and the ~60% Tier-1 coverage gap need rethinking. Reopen trigger: free tier still
+  reads as untrustworthy after living with the Option-B copy. (Also in
+  STRATEGIC_DECISIONS.)
+- [SCHEDULED — Phase 6] First-solve CAS auto-fire is page-session-scoped (re-fires on
+  reload). Replaced by server-side per-user monthly limits at deployment.
+- [SCHEDULED — pre-Phase-6] Cleanup sweep: resolve all debug.observation call sites
+  (incl. the jpeg_bug_2026_05 diagnostic), remove the dead /history/list endpoint.
+
+---
+## Autonomy, Decision & Brief-Authoring Convention
+
+Risk tiers for implementation work:
+- Tier A — Autonomous loop. Reversible, bounded work: UI, copy, styling, isolated
+  frontend/backend logic, mechanical cleanup, test code. Claude Code may diagnose,
+  fix, iterate, and commit once the brief's acceptance criteria pass; it surfaces only
+  the final state or a genuine blocker. No mid-task stop required.
+- Tier B — Gated (stop-and-report). Anything touching DB schema or migrations,
+  concurrency/locking, auth, payments/money, a locked invariant, destructive or
+  irreversible actions, or a product-trust surface (verification logic or copy).
+  Claude Code implements or proposes, then STOPS and reports for human review before
+  committing.
+
+Brief declaration:
+- Every brief header declares `Autonomy: A` or `Autonomy: B`. A brief may be Tier A
+  overall with specific sections marked `(B — gated)`.
+- Every Tier A brief includes explicit, checkable ACCEPTANCE CRITERIA and, where
+  feasible, a runnable check (a script under scripts/verify/) Claude Code runs to
+  self-verify before committing. Deterministic checks are scripted, not eyeballed;
+  UX/visual checks remain for human review.
+
+Decision tiering (governs Claude-in-chat, the architect):
+- Low-stakes decisions: proceed on the architect's lean; flag only if it touches an
+  invariant or a Tier-B surface. No decision-sheet ceremony.
+- Consequential/irreversible decisions: full options + lean + reasoning, locked into
+  CLAUDE.md/STRATEGIC_DECISIONS before any code.
+
+Verification accumulation:
+- Per-brief check scripts accumulate under scripts/verify/ into a growing suite, run
+  by scripts/verify/run.js. This suite is the project's "verification agent" —
+  runnable evidence that replaces manual deterministic testing. Manual testing is
+  reserved for UX/visual behavior only.
