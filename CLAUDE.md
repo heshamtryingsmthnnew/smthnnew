@@ -2342,3 +2342,22 @@ Verification accumulation:
   by scripts/verify/run.js. This suite is the project's "verification agent" —
   runnable evidence that replaces manual deterministic testing. Manual testing is
   reserved for UX/visual behavior only.
+
+---
+## Maintaining this context (standing rule)
+
+These sections (Principles & Learnings, Open Items / Carry-Forward, and the
+Autonomy/Decision/Brief-Authoring Convention) are living, not a snapshot. Every
+chat and every brief must keep them current:
+- When a new durable principle or gotcha is discovered, add it to "Principles &
+  Learnings" — never leave it in chat only.
+- When an item opens, closes, or changes status, update "Open Items /
+  Carry-Forward" in the same commit. The repo, never chat memory, is the source
+  of truth.
+- When a decision is locked or reversed, record it here and/or in
+  STRATEGIC_DECISIONS before any code is written.
+- A brief is not complete until any principle, open item, or decision it created
+  or resolved has been written into these sections.
+
+The test: a fresh chat reading only CLAUDE.md + STRATEGIC_DECISIONS should be able
+to continue with zero reliance on prior conversation memory.
