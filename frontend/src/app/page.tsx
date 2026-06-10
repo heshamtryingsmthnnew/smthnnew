@@ -1777,30 +1777,41 @@ export default function Home() {
 
         return (
           <div
-            className="fixed top-0 z-[26] flex h-9 items-center gap-1"
+            className="fixed top-0 z-[26] flex h-9 items-center gap-1.5"
             style={{
               left: `calc(50% + ${contentOffset}px)`,
               transform: 'translateX(-50%)',
               transition: 'left 200ms',
             }}
           >
-            {/* Prev (older) arrow */}
-            {showArrows && (
-              <button
-                type="button"
-                disabled={isOldest}
-                onClick={() => handleTabNav('prev')}
-                className="flex h-6 w-6 items-center justify-center rounded text-zinc-600 transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-25"
-                aria-label="Older solve"
-              >
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                  <path d="M6.5 2L3.5 5L6.5 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-              </button>
-            )}
+            {/* Prev (older) arrow — outside the notch, mounts/unmounts independently */}
+            <AnimatePresence>
+              {showArrows && (
+                <motion.button
+                  key="prev-arrow"
+                  type="button"
+                  disabled={isOldest}
+                  onClick={() => handleTabNav('prev')}
+                  initial={{ opacity: 0, scale: 0.85 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.85 }}
+                  transition={{ duration: 0.15 }}
+                  className="flex h-6 w-6 items-center justify-center rounded text-zinc-600 transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-25"
+                  aria-label="Older solve"
+                >
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                    <path d="M6.5 2L3.5 5L6.5 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </motion.button>
+              )}
+            </AnimatePresence>
 
-            {/* Tab frame */}
-            <div className="relative flex min-w-[120px] max-w-[260px] items-center justify-center rounded border border-white/[0.06] px-3 h-[26px]">
+            {/* Notch — opaque, flush to top edge, bottom corners only */}
+            <motion.div
+              layout
+              transition={{ duration: 0.2, ease: 'easeOut' }}
+              className="relative flex h-9 min-w-[120px] max-w-[260px] items-center justify-center rounded-b-lg border-x border-b border-white/[0.08] bg-zinc-900 px-3"
+            >
               <AnimatePresence mode="wait" initial={false}>
                 {!displayedSession ? (
                   <motion.span
@@ -1809,7 +1820,7 @@ export default function Home() {
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.2 }}
-                    className={`${dmSerifDisplay.className} select-none text-[13px] text-white/[0.10]`}
+                    className={`${dmSerifDisplay.className} select-none text-[14px] text-white`}
                   >
                     Ergo.
                   </motion.span>
@@ -1842,22 +1853,29 @@ export default function Home() {
                   </motion.span>
                 )}
               </AnimatePresence>
-            </div>
+            </motion.div>
 
-            {/* Next (newer) arrow */}
-            {showArrows && (
-              <button
-                type="button"
-                disabled={isNewest}
-                onClick={() => handleTabNav('next')}
-                className="flex h-6 w-6 items-center justify-center rounded text-zinc-600 transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-25"
-                aria-label="Newer solve"
-              >
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                  <path d="M3.5 2L6.5 5L3.5 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-              </button>
-            )}
+            {/* Next (newer) arrow — outside the notch, mounts/unmounts independently */}
+            <AnimatePresence>
+              {showArrows && (
+                <motion.button
+                  key="next-arrow"
+                  type="button"
+                  disabled={isNewest}
+                  onClick={() => handleTabNav('next')}
+                  initial={{ opacity: 0, scale: 0.85 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.85 }}
+                  transition={{ duration: 0.15 }}
+                  className="flex h-6 w-6 items-center justify-center rounded text-zinc-600 transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-25"
+                  aria-label="Newer solve"
+                >
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                    <path d="M3.5 2L6.5 5L3.5 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </motion.button>
+              )}
+            </AnimatePresence>
           </div>
         );
       })()}

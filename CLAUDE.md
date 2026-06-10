@@ -189,14 +189,22 @@ STRATEGIC_DECISIONS.md.
   left: calc(50% + sidebarWidth/2), transform: translateX(-50%).
   Responsive to sidebar collapse state via sidebarWidth computed var.
   z-[26] — sits above sticky answer bar (z-[25]), below left panel (z-30).
-- Empty state: low-opacity (8–12%) DM Serif Display "Ergo." watermark
-  inside a subtle tab frame. No fill. No animation on the element itself.
-- After first solve: watermark fades out, session title fades in.
-  200–300ms content swap. Element does not animate — content only.
-- After 2+ solves in session: forward/back arrows flank the title for
-  navigating between problems in that session.
+- Notch shape: opaque container attached flush to the top edge — no top
+  border, no gap above. Bottom corners rounded only, top corners square.
+  Border on visible (bottom + sides) edges only, white/[0.08] family.
+  Fill matches the answer-card material family (opaque zinc step, e.g.
+  bg-zinc-900) — reads as the same surface as the answer card it caps,
+  not contrasting chrome.
+- Empty state: DM Serif Display "Ergo." renders at full opacity inside
+  the notch — legible identity, not a watermark.
+- After first solve: wordmark crossfades to session title (Geist Sans).
+  200–300ms content swap inside the same opaque notch. Notch width eases
+  between the two content widths.
+- After 2+ solves in session: forward/back arrows render OUTSIDE the
+  notch, as independent frame elements flanking its left/right edges —
+  decoupled from the notch's content-crossfade/width animation. Arrows
+  mount/unmount on their own without causing layout jump.
 - Click title: inline rename (contentEditable or input swap).
-- Chevron/dots icon: opens session switcher (v1 scope TBD).
 - Sticky answer bar shifts from top-0 to top-9 to sit directly below
   session tab. Both are always-present strips; sticky bar still uses
   IntersectionObserver to slide in only when answer box scrolls out of view.
@@ -1382,6 +1390,33 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     CLEAR and initial null). scripts/verify/run.js: suite runner (14/14 pass).
   - BUILD_VERSION: "v4.7.0-session-tab"
 
+✅ Phase 5a — Session Tab Notch (Brief #5.1) ✅ COMPLETE
+  - Restyled the session tab container into an opaque "notch": no top
+    border, rounded-b-lg only (top corners square, flush to viewport top,
+    no gap above), border-x border-b border-white/[0.08], bg-zinc-900 fill
+    (same material family as the answer card, raised to a solid zinc step
+    for opacity-against-the-void in the empty state).
+  - Empty-state "Ergo." wordmark changed from text-white/[0.10] (8-12%
+    ghost watermark) to full-opacity text-white DM Serif Display (14px) —
+    reads as legible identity, not a placeholder.
+  - Loaded-state session name (Geist Sans, zinc-400) unchanged; wordmark
+    ↔ session-name AnimatePresence crossfade (200ms) preserved. Notch
+    wrapped in motion.div with layout prop — width eases between the two
+    content widths.
+  - Prev/next arrows: relocated from inside the tab frame to independent
+    motion.button siblings flanking the notch, each wrapped in its own
+    AnimatePresence (opacity/scale, 150ms) so they mount/unmount without
+    a layout jump. Visibility rule (≥2 solves, disabled at boundary),
+    handleTabNav wiring, and TAB_NAV_SOLVE index math untouched.
+  - Session-switcher chevron/dots affordance: never built, and the
+    corresponding CLAUDE.md Section 5 line describing it is removed —
+    sidebar remains the only cross-session nav surface.
+  - scripts/verify/sessionNotch.test.js: 11 assertions — no switcher
+    trigger in the session-tab block, exactly one prev/one next arrow,
+    notch opacity/border classes present, old ghost-opacity/all-around
+    border classes absent. Wired into scripts/verify/run.js (25/25 pass).
+  - BUILD_VERSION: "v4.7.1-notch"
+
   JPEG Extraction Bug — RESOLVED (no recurrence):
   - events table queried for debug.observation tagged jpeg_bug_2026_05:
     zero rows. Bug did not recur during testing. No fix needed.
@@ -1723,12 +1758,21 @@ Frontend (/frontend/src/app/page.tsx)
     Threaded into auto-fire /verify call and manual runAdvancedVerification call.
     Cleared by handleReset. Future-use for frontend event logging.
   - Session tab: fixed top-0 z-[26], always in DOM, centered in content area.
-    Reads from displayedSessionId (not activeSessionId). Arrows (prev/next)
-    appear at ≥2 solves, disabled at boundaries. handleTabNav() calls
+    Reads from displayedSessionId (not activeSessionId). handleTabNav() calls
     loadHistoricalSolve() — no duplicate fetch logic. tabMicrocopy
     'started_new_session' auto-dismisses in 4s via useEffect. Sticky answer
     bar shifted to top-9; scrollable content area pt-20.
-    BUILD_VERSION: "v4.7.0-session-tab"
+  - Session tab notch: inner tab frame restyled to an opaque notch —
+    motion.div with layout (width eases on content change), h-9,
+    rounded-b-lg, border-x border-b border-white/[0.08], bg-zinc-900, no
+    top border, flush to viewport top. Empty state "Ergo." in DM Serif
+    Display at full opacity (text-white, 14px) — no longer an 8-12% ghost.
+    Loaded state session name (Geist Sans zinc-400) crossfades in/out via
+    the same AnimatePresence as before. Prev/next arrows are independent
+    motion.button siblings outside the notch (each its own AnimatePresence,
+    opacity/scale, 150ms), appear at ≥2 solves, disabled at boundaries —
+    visibility rule, wiring, and TAB_NAV_SOLVE index math unchanged.
+    BUILD_VERSION: "v4.7.1-notch"
   - Image-file handling: shared acquireFile() helper (module-level function)
     used by both the main composer and the batch modal Input stage
     (paste/drop/input). Endpoints remain distinct (/extract-problem vs

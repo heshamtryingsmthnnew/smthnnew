@@ -7,6 +7,7 @@ const path = require('path');
 
 const tests = [
   'scripts/verify/sessionTab.test.js',
+  'scripts/verify/sessionNotch.test.js',
 ];
 
 let allPassed = true;

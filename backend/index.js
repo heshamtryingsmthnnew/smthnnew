@@ -34,7 +34,7 @@ const batchUpload = multer({
   },
 });
 
-const BUILD_VERSION = "v4.7.0-session-tab";
+const BUILD_VERSION = "v4.7.1-notch";
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID;
 const SOLUTION_MODEL = process.env.SOLUTION_MODEL || 'claude-sonnet-4-5';
 
