@@ -1435,6 +1435,16 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
   - Reducer slices reserved: batch.panelOpen, batch.job, BATCH_PANEL_TOGGLE,
     BATCH_JOB_SET, BATCH_QUEUE_UPDATED.
 
+  ⚠ REFORM PENDING (DECISION_SHEET_grouping_model.md): the grouping model is
+    being reworked to durable, reopenable sessions + collections-of-sessions.
+    The three "Do Not Build" items below (manual session creation / switching /
+    continue-session) are SUPERSEDED-IN-PLAN: they become core durable-session
+    behavior. They remain listed as not-yet-built because the code still reflects
+    the old model. Do NOT build them ad hoc — they ship via the sequenced reform
+    briefs. Do NOT treat these as permanently forbidden. When the durable-sessions
+    brief lands, this block and ALL duplicate statements (see global Do-Not list
+    below) are removed together in that commit.
+
   Do Not Build in Phase 5a (log in STRATEGIC_DECISIONS.md):
   - Manual session creation
   - Manual session switching of new solves into old sessions
@@ -1462,6 +1472,11 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     Free: badge label only. Pro: mismatch expands inline diagnostic
     showing evaluated forms. Badge colors: emerald verified,
     amber mismatch, zinc unverifiable/not_checked.
+
+  ⚠ REFORM PENDING (DECISION_SHEET_grouping_model.md): collections will group
+    SESSIONS, not solves, and live on a separate page (not a solve-area tab). Do
+    not build against the solve-based spec below. Rewritten with Section 15 in the
+    collections brief.
 
   Collections (Pro-only):
   - Schema: `collections` table (id, user_id, name, created_at) +
@@ -1985,12 +2000,21 @@ Phase 4 — History + Library + Auth (new)
 - Allow collection delete to cascade-delete constituent solves
 - Strip verification badge or step status from exported files
 - Defer Stripe to a post-deployment phase — ships with Phase 6
+- ⚠ REFORM PENDING (DECISION_SHEET_grouping_model.md): the next entry ("never
+  triggered by session click") describes CURRENT pre-reform behavior and is still
+  true today. The reform reverses it — clicking a session will activate it. Do not
+  build the new behavior here; it lands via the durable-sessions brief, which
+  removes this entry in the same commit. Until then this constraint holds.
 - Load a solve when a user clicks a session header — loading is always
   at problem level, never triggered by session click
 - Fix the JPEG extraction bug without first pulling and reading actual
   logs from /extract-problem — diagnose before writing any code
 - Merge a batch job's solves into the surrounding time-cluster session —
   batch is always its own named session
+- ⚠ REFORM PENDING (DECISION_SHEET_grouping_model.md): the three manual-session
+  entries below are duplicated from the "Do Not Build in Phase 5a" block and are
+  superseded-in-plan by the durable-sessions reform. They remain until the reform
+  brief lands. Flip ALL copies together when it does.
 - Implement manual session creation in v1
 - Implement manual session switching of new solves into old sessions in v1
 - Implement a "continue this session" feature in v1
@@ -2214,6 +2238,16 @@ route. Public pages are individually reachable only. Ever.
 
 ---
 ## 15. Collections
+
+> ⚠ REFORM PENDING — DECISION_SHEET_grouping_model.md. This section describes the
+> CURRENT spec: collections group *solves* (collection_solves join, many-to-many
+> over solves). The reform repoints collections to group *sessions* instead
+> (collection_sessions join, many-to-many over sessions; sessions float loose by
+> default; collections live on a separate collections page reached from a nav
+> button, not a solve-area tab). DO NOT build new work against the current
+> solve-based spec. This section, the Phase 5b "Collections (Pro-only)" block, and
+> the Pro-tier references elsewhere are rewritten together when the collections
+> brief lands. Until then, treat this as accurate-but-superseded.
 
 Pro-exclusive. Not available on free tier.
 
