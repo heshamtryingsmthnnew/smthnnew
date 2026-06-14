@@ -8,6 +8,8 @@ const path = require('path');
 const tests = [
   'scripts/verify/sessionTab.test.js',
   'scripts/verify/sessionNotch.test.js',
+  'scripts/verify/durableSessions.test.js',
+  'scripts/verify/reopenedNames.test.js',
 ];
 
 let allPassed = true;

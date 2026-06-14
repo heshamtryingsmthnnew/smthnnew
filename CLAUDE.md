@@ -1417,6 +1417,47 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     border classes absent. Wired into scripts/verify/run.js (25/25 pass).
   - BUILD_VERSION: "v4.7.1-notch"
 
+✅ Phase 5a — Durable Sessions (Step 1: Activation + Validated Attach) ✅ COMPLETE
+  - get_or_create_active_session() gains a 5th param, p_active_session_id
+    (DEFAULT NULL). New branch (inside the existing advisory lock): when
+    non-null, validates the id belongs to the requesting owner and attaches
+    directly (bumps last_solve_at, returns via_activation: true). On any miss
+    (null, not found, foreign owner) falls through to the unchanged 4-hour
+    clustering logic — never errors, never attaches cross-owner. Captured as
+    backend/migrations/002_durable_session_activation.sql.
+  - backend/supabase.js insertSolve(): accepts activeSessionId, forwarded as
+    p_active_session_id. via_activation read from the RPC result and guards
+    the session.cluster_boundary log (a manual attach is not a boundary event).
+  - backend/index.js /solve: reads active_session_id from the request body,
+    forwards to insertSolve. No server-side validation here — the Postgres
+    function is the sole authority (defense-in-depth at the DB layer only).
+  - frontend: /solve request body includes active_session_id: sState.activeSessionId.
+    sessionReducer.ts gains ACTIVATE_SESSION (sets activeSessionId +
+    displayedSessionId to the chosen session, nulls displayedSolveId — empty
+    composer per §6b, clears tabMicrocopy) and DEACTIVATE_SESSION (clears all
+    three pointers + tabMicrocopy).
+  - page.tsx: handleReset's local-state reset extracted into clearWorkspace()
+    (shared, no reducer dispatch). handleReset = clearWorkspace() +
+    dispatch(DEACTIVATE_SESSION) — Home is now the deactivation gesture and
+    also fixes the shipped bug where the notch retained the session name on
+    an empty Home screen. handleActivateSession(sessionId) = clearWorkspace()
+    + dispatch(ACTIVATE_SESSION, sessionId) — wired to the sidebar session
+    name/label click.
+  - Sidebar session row: gained a chevron disclosure button (mirrors the
+    bucket header pattern) for TOGGLE_SESSION (expand/collapse). The session
+    name/label click now activates the session via handleActivateSession.
+    Active session gets a subtle bg-white/[0.04] row highlight. Solve-row
+    clicks underneath are unchanged (DISPLAY_SOLVE).
+  - Durable sessions (v4.8.0): sessions are activatable/reopenable; new
+    solves attach to the active session, validated server-side; Home
+    deactivates and reverts the notch to the Ergo. watermark.
+  - scripts/verify/durableSessions.test.js: 16 assertions — ACTIVATE_SESSION
+    (sets active+displayed, nulls displayed solve, no-ops on unknown id),
+    DEACTIVATE_SESSION (clears all pointers + tabMicrocopy), and regressions
+    confirming DISPLAY_SOLVE and SOLVE_RECONCILED still honor the
+    activeSessionId invariants. Wired into scripts/verify/run.js (41/41 pass).
+  - BUILD_VERSION: "v4.8.0-durable-sessions"
+
   JPEG Extraction Bug — RESOLVED (no recurrence):
   - events table queried for debug.observation tagged jpeg_bug_2026_05:
     zero rows. Bug did not recur during testing. No fix needed.
@@ -1434,24 +1475,6 @@ UI Fixes 2 (UI_FIXES_2_BRIEF.md) ✅ COMPLETE
     extraction source. Does not merge into the surrounding time-cluster session.
   - Reducer slices reserved: batch.panelOpen, batch.job, BATCH_PANEL_TOGGLE,
     BATCH_JOB_SET, BATCH_QUEUE_UPDATED.
-
-  ⚠ REFORM PENDING (DECISION_SHEET_grouping_model.md): the grouping model is
-    being reworked to durable, reopenable sessions + collections-of-sessions.
-    The three "Do Not Build" items below (manual session creation / switching /
-    continue-session) are SUPERSEDED-IN-PLAN: they become core durable-session
-    behavior. They remain listed as not-yet-built because the code still reflects
-    the old model. Do NOT build them ad hoc — they ship via the sequenced reform
-    briefs. Do NOT treat these as permanently forbidden. When the durable-sessions
-    brief lands, this block and ALL duplicate statements (see global Do-Not list
-    below) are removed together in that commit.
-
-  Do Not Build in Phase 5a (log in STRATEGIC_DECISIONS.md):
-  - Manual session creation
-  - Manual session switching of new solves into old sessions
-  - "Continue this session" feature
-  Rationale: auto-grouping + view-only old sessions is the correct v1
-  model. Post-launch candidates — revisit when user behavior data shows
-  meaningful demand for manual control.
 
 🔲 Phase 5b — Pre-Deployment Features
 
@@ -1881,6 +1904,79 @@ Phase 5a — Sidebar Restructure + Optimistic Insert (new)
   - All dispatch({ type: 'SET_SIDEBAR_COLLAPSED', value }) replacing
     setSidebarCollapsed direct calls.
 
+Phase 5a — Durable Sessions Step 1: Activation + Validated Attach (new)
+  - backend/migrations/002_durable_session_activation.sql: proposed migration
+    (Part A, gated — pending founder review/apply to live Supabase). Adds
+    p_active_session_id uuid DEFAULT NULL as a 5th parameter to
+    get_or_create_active_session(). Inside the existing advisory lock, a new
+    branch runs first: if p_active_session_id is non-null and a row in
+    sessions matches both the id AND the requesting owner (user_id or
+    anon_session_id), last_solve_at is bumped and the function returns with
+    via_activation: true. Any miss (null param, not found, or owned by a
+    different user/anon key) falls through unchanged to the existing 4-hour
+    clustering logic — never errors, never attaches cross-owner.
+  - backend/supabase.js insertSolve(): new activeSessionId param, forwarded
+    to the RPC as p_active_session_id. Reads via_activation from the RPC
+    result; session.cluster_boundary now only fires when
+    boundaryCrossed && !viaActivation (a validated manual attach is not a
+    clustering boundary event).
+  - backend/index.js /solve: reads active_session_id from the request body
+    (req.body?.active_session_id || null) and forwards it to insertSolve.
+    No additional server-side ownership check here — the Postgres function
+    is the sole validation authority. solveOne() (batch path) intentionally
+    untouched.
+  - frontend sessionReducer.ts: ACTIVATE_SESSION(sessionId) — no-ops if the
+    session id is unknown; otherwise sets activeSessionId AND
+    displayedSessionId to sessionId, nulls displayedSolveId (empty composer,
+    §6b), clears tabMicrocopy. DEACTIVATE_SESSION — clears activeSessionId,
+    displayedSessionId, displayedSolveId, and tabMicrocopy.
+  - frontend page.tsx: doSolve's /solve body now includes
+    active_session_id: sState.activeSessionId. handleReset's local-state
+    resets extracted into clearWorkspace() (no dispatch); handleReset =
+    clearWorkspace() + dispatch(DEACTIVATE_SESSION); new
+    handleActivateSession(sessionId) = clearWorkspace() +
+    dispatch(ACTIVATE_SESSION, sessionId).
+  - Sidebar session row: new chevron disclosure button (bucket-header
+    pattern) dispatches TOGGLE_SESSION for expand/collapse. The session
+    name/label click now calls handleActivateSession(session.id). Active
+    session row gets bg-white/[0.04] highlight. Per-solve row clicks
+    (DISPLAY_SOLVE) unchanged.
+  - scripts/verify/durableSessions.test.js: 16 assertions (ACTIVATE_SESSION
+    sets pointers + nulls displayed solve + no-ops on unknown id;
+    DEACTIVATE_SESSION clears all four fields; DISPLAY_SOLVE and
+    SOLVE_RECONCILED regressions on the activeSessionId invariant). Wired
+    into scripts/verify/run.js (41/41 pass).
+  - BUILD_VERSION: "v4.8.0-durable-sessions"
+
+Phase 5a — Reopened Session Names (Brief 6.1, new)
+  - sessions.source gains a fourth value: 'reopened' (alongside
+    'auto' | 'renamed' | 'batch'). Distinct from 'renamed' so analytics can
+    tell auto/renamed/reopened/batch apart.
+  - backend/supabase.js recomputeSessionName(sessionId, viaActivation = false):
+    new second param (default false, existing callers unaffected). If
+    viaActivation && session.source === 'auto', flips source to 'reopened'
+    via UPDATE ... WHERE id=... AND source='auto' (double-guard mirrors the
+    rename double-guard), then returns the current name + created_at without
+    recomputing — the flip happens before the existing
+    `if (session.source !== 'auto') return unchanged` guard, so that guard
+    now naturally also covers 'reopened' sessions on all future appends.
+    Normal (non-activation) appends to 'auto' sessions still recompute/rename
+    exactly as before.
+  - backend/supabase.js insertSolve(): passes viaActivation (from
+    rpcData.via_activation) into recomputeSessionName(clusterSessionId, viaActivation).
+  - frontend/src/app/state/sessionReducer.ts: SessionMeta.source type widened
+    to 'auto' | 'renamed' | 'batch' | 'reopened'. No reducer case changes —
+    SOLVE_RECONCILED still creates new sessions as 'auto'; SESSION_RENAMED
+    still sets 'renamed'. 'reopened' arrives only via GET /sessions /
+    SOLVE_RECONCILED session payloads from the backend.
+  - scripts/verify/reopenedNames.test.js: 10 assertions mirroring
+    recomputeSessionName's branching — via_activation append to 'auto' flips
+    to 'reopened' with name frozen even if dominant kind shifted; normal
+    append to 'auto' still recomputes (regression); appends to 'renamed' and
+    already-'reopened' sessions leave source+name unchanged. Wired into
+    scripts/verify/run.js (51/51 pass). tsc --noEmit clean.
+  - BUILD_VERSION: "v4.8.1-reopened-names"
+
 Phase 5 — Batch Solve (new)
   - backend: solveOne(rawInput, mode) standalone async function — full solve
     path (prompts, model call, JSON parse, verification, artifact build).
@@ -2000,24 +2096,10 @@ Phase 4 — History + Library + Auth (new)
 - Allow collection delete to cascade-delete constituent solves
 - Strip verification badge or step status from exported files
 - Defer Stripe to a post-deployment phase — ships with Phase 6
-- ⚠ REFORM PENDING (DECISION_SHEET_grouping_model.md): the next entry ("never
-  triggered by session click") describes CURRENT pre-reform behavior and is still
-  true today. The reform reverses it — clicking a session will activate it. Do not
-  build the new behavior here; it lands via the durable-sessions brief, which
-  removes this entry in the same commit. Until then this constraint holds.
-- Load a solve when a user clicks a session header — loading is always
-  at problem level, never triggered by session click
 - Fix the JPEG extraction bug without first pulling and reading actual
   logs from /extract-problem — diagnose before writing any code
 - Merge a batch job's solves into the surrounding time-cluster session —
   batch is always its own named session
-- ⚠ REFORM PENDING (DECISION_SHEET_grouping_model.md): the three manual-session
-  entries below are duplicated from the "Do Not Build in Phase 5a" block and are
-  superseded-in-plan by the durable-sessions reform. They remain until the reform
-  brief lands. Flip ALL copies together when it does.
-- Implement manual session creation in v1
-- Implement manual session switching of new solves into old sessions in v1
-- Implement a "continue this session" feature in v1
 - Remove the optimistic sidebar row on solve fire before the /solve
   response returns — show "solving..." state, reconcile on return
 - Create a separate sessions table — derive all session metadata from
@@ -2079,9 +2161,11 @@ Phase 4 — History + Library + Auth (new)
 5. Suggestion chips never duplicate an always-visible toolbar control. Chips exist
    only for recovery actions the toolbar cannot perform (math keyboard, formatting
    help). One place per idea.
-6. Sessions auto-cluster by time (SESSION_CLUSTER_HOURS = 4). Manual session
-   creation/management is deferred (OPEN QUESTION 2). Do not drift toward manual
-   workspace switching.
+6. Sessions auto-cluster by time (SESSION_CLUSTER_HOURS = 4) as the default
+   auto-creation trigger when no session is active. Activation (clicking a
+   session) overrides the clock — the clock creates, only the user
+   deactivates (Home). Activation persists until explicit exit; no 4-hour
+   expiry on a manually-activated session.
 7. Two-pointer state model: activeSessionId (server-authoritative, where new solves
    attach) and displayedSessionId (what the workspace renders) are distinct fields.
    Loading old work never moves activeSessionId.
@@ -2095,6 +2179,25 @@ Phase 4 — History + Library + Auth (new)
     CLAUDE.md/STRATEGIC_DECISIONS before any code. With no production clients,
     response shapes change additively and fields are renamed for clarity rather than
     overloaded with new meaning.
+11. Active session is client-proposed, server-validated — the DB function is the
+    sole authority on whether an attach is allowed; never trust the client's
+    active id without the owner-match check.
+12. A session name committed-to via deliberate reopening freezes
+    (`source='reopened'`): the first solve that attaches via activation
+    (`via_activation === true`) to an `'auto'` session flips it to
+    `'reopened'` before the auto-rename guard runs, and the name never
+    recomputes again. Auto-rename only applies to untouched `'auto'`
+    sessions — never to `'reopened'`, `'renamed'`, or `'batch'`. Looking
+    (paging with tab arrows) never freezes a name; only appending a new
+    solve via activation does.
+13. A gated DB migration is not "done" when the file is written and reviewed —
+    it's done when applied AND a post-apply verification query confirms the
+    new object is live (see Autonomy & Brief-Authoring Convention). The
+    v4.8.0 durable-sessions migration was reviewed but not applied; the
+    backend (already calling the new 5-arg function signature) failed
+    "could not find the function ... in the schema cache" on every solve
+    until the migration was applied, the stale 4-arg overload dropped, and
+    PostgREST's schema cache reloaded (`NOTIFY pgrst, 'reload schema'`).
 
 ---
 ## 12. Library & History (Locked)
@@ -2428,6 +2531,45 @@ Brief declaration:
   feasible, a runnable check (a script under scripts/verify/) Claude Code runs to
   self-verify before committing. Deterministic checks are scripted, not eyeballed;
   UX/visual checks remain for human review.
+
+Gated database migrations — "done" requires post-apply confirmation:
+- A `(B — gated)` step that produces a database migration has **two** actions, not
+  one: (1) write the migration file — Claude Code does this, the gate stops it from
+  applying; (2) apply the migration to the live DB — the human runs it. Writing and
+  committing the migration file is only step 1. The step is NOT done until step 2 is
+  confirmed by a **post-apply verification query** whose output shows the new object
+  actually exists in the database. "Done" means applied-and-verified, never
+  written-and-reviewed.
+- Required closing step: after the human applies the migration, run and paste the
+  verification appropriate to the change.
+  - Function change:
+    ```sql
+    SELECT pg_get_function_identity_arguments(p.oid) AS args
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE p.proname = '<function_name>';
+    ```
+    Confirm (a) the expected new signature is present, and (b) there is exactly ONE
+    row unless multiple overloads are intended — a stale old-signature row alongside
+    the new one means the old overload wasn't dropped and will cause PostgREST
+    "could not choose best candidate" (PGRST203) or ambiguous resolution. Drop the
+    stale signature explicitly: `DROP FUNCTION IF EXISTS public.<function_name>(<old
+    arg type list>);`. Then reload PostgREST's schema cache: `NOTIFY pgrst, 'reload
+    schema';` (a cache reload only matters once the new object genuinely exists —
+    reloading against an unchanged schema does nothing, which can look like the
+    reload "failed").
+  - Column/table change: the equivalent confirmation is an `information_schema.columns`
+    query (schema-qualified to `public`, to avoid matching Supabase's internal
+    `auth`/`storage` tables) showing the new columns present.
+- Every gated-migration brief's acceptance criteria must include, as the final item:
+  "Post-apply: paste the signature/column verification query output showing the
+  change is live in the DB. The step is not complete until this is confirmed."
+- **Banked incident:** the v4.8.0 durable-sessions migration
+  (`002_durable_session_activation.sql`) was written and reviewed under the gate but
+  not applied to Supabase. The backend (already updated to call the new 5-arg
+  signature) hit "could not find the function ... in the schema cache" on every
+  solve, because the DB still had the old 4-arg function. Resolved by applying the
+  migration, dropping the stale 4-arg overload, and reloading the schema cache. Root
+  cause: "done" collapsed write + apply into one step. This convention is the fix.
 
 Decision tiering (governs Claude-in-chat, the architect):
 - Low-stakes decisions: proceed on the architect's lean; flag only if it touches an

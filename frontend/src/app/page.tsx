@@ -493,7 +493,10 @@ export default function Home() {
   const certaintyLabel = artifact ? getCertaintyLabel(artifact.verification.certainty) : null;
   const isActive = loading || !!artifact;
 
-  const handleReset = useCallback(() => {
+  // Clears the workspace (artifact, composer, panels, wedge state) without touching
+  // session activation pointers — shared by handleReset (deactivates) and session
+  // activation (activates a different session into an empty composer, §6b).
+  const clearWorkspace = useCallback(() => {
     solveTimersRef.current.forEach(clearTimeout);
     solveTimersRef.current = [];
     setSolveStage('idle');
@@ -523,6 +526,19 @@ export default function Home() {
     setRevalidationNote(null);
     setCurrentCorrelationId(null);
   }, []);
+
+  const handleReset = useCallback(() => {
+    clearWorkspace();
+    dispatch({ type: 'DEACTIVATE_SESSION' });
+  }, [clearWorkspace, dispatch]);
+
+  // Activates a session (clicking it in the sidebar): clears the workspace to an
+  // empty composer and points new solves at this session (§6b — does not auto-load
+  // a solve; arrows/solve-row clicks remain the path to viewing old answers).
+  const handleActivateSession = useCallback((sessionId: string) => {
+    clearWorkspace();
+    dispatch({ type: 'ACTIVATE_SESSION', sessionId });
+  }, [clearWorkspace, dispatch]);
 
   useEffect(() => {
     setExampleIndex(0);
@@ -951,7 +967,7 @@ export default function Home() {
           ? { Authorization: `Bearer ${sessionData.session.access_token}` }
           : {}),
       };
-      const res = await axios.post(`${API_URL}/solve`, { question, mode }, { headers: authHeaders });
+      const res = await axios.post(`${API_URL}/solve`, { question, mode, active_session_id: sState.activeSessionId }, { headers: authHeaders });
 
       // Clear scheduled stage timers
       solveTimersRef.current.forEach(clearTimeout);
@@ -1562,7 +1578,21 @@ export default function Home() {
                             return (
                               <div key={session.id}>
                                 {/* Session header row */}
-                                <div className="group relative flex items-center px-3 py-1.5 transition-colors hover:bg-white/[0.03]">
+                                <div className={`group relative flex items-center px-3 py-1.5 transition-colors hover:bg-white/[0.03] ${sState.activeSessionId === session.id ? 'bg-white/[0.04]' : ''}`}>
+                                  {/* Expand/collapse chevron — mirrors bucket header disclosure */}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); dispatch({ type: 'TOGGLE_SESSION', sessionId: session.id }); }}
+                                    className="mr-1.5 flex-shrink-0 p-0.5 text-zinc-600 transition-colors hover:text-zinc-400"
+                                    title={isSessionOpen ? 'Collapse' : 'Expand'}
+                                  >
+                                    <svg
+                                      width="7" height="7" viewBox="0 0 8 8" fill="currentColor"
+                                      className={`transition-transform duration-150 ${isSessionOpen ? 'rotate-90' : ''}`}
+                                    >
+                                      <polygon points="2,1 6,4 2,7" />
+                                    </svg>
+                                  </button>
                                   {/* Batch session icon */}
                                   {session.source === 'batch' && (
                                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="mr-1.5 flex-shrink-0 text-zinc-500">
@@ -1571,11 +1601,12 @@ export default function Home() {
                                       <polyline points="2 12 12 17 22 12" />
                                     </svg>
                                   )}
-                                  {/* Session name / rename input */}
+                                  {/* Session name / rename input — click activates this session */}
                                   <button
                                     type="button"
-                                    onClick={(e) => { e.stopPropagation(); dispatch({ type: 'TOGGLE_SESSION', sessionId: session.id }); }}
+                                    onClick={(e) => { e.stopPropagation(); handleActivateSession(session.id); }}
                                     className="min-w-0 flex-1 text-left"
+                                    title="Activate session — new solves attach here"
                                   >
                                     {isRenaming ? (
                                       <input

@@ -29,7 +29,7 @@ function sessionDateLabel(createdAt) {
   return `${months[d.getMonth()]} ${d.getDate()}`;
 }
 
-async function insertSolve({ userId, anonSessionId, rawInput, mode, artifact }) {
+async function insertSolve({ userId, anonSessionId, rawInput, mode, artifact, activeSessionId }) {
   const ver = artifact?.verification || {};
   const np = artifact?.normalized_payload || {};
   const problemKind = np.type || null;
@@ -38,16 +38,18 @@ async function insertSolve({ userId, anonSessionId, rawInput, mode, artifact }) 
   let clusterSessionId = null;
   let sessionCreated = false;
   let boundaryCrossed = false;
+  let viaActivation = false;
 
   try {
     const now = new Date().toISOString();
     const { data: rpcData, error: rpcError } = await supabase.rpc(
       'get_or_create_active_session',
       {
-        p_user_id:         userId || null,
-        p_anon_session_id: userId ? null : (anonSessionId || null),
-        p_now:             now,
-        p_cluster_hours:   SESSION_CLUSTER_HOURS,
+        p_user_id:           userId || null,
+        p_anon_session_id:   userId ? null : (anonSessionId || null),
+        p_now:               now,
+        p_cluster_hours:     SESSION_CLUSTER_HOURS,
+        p_active_session_id: activeSessionId || null,
       }
     );
 
@@ -57,6 +59,7 @@ async function insertSolve({ userId, anonSessionId, rawInput, mode, artifact }) 
       clusterSessionId = rpcData.session_id || null;
       sessionCreated   = rpcData.created    || false;
       boundaryCrossed  = rpcData.boundary_crossed || false;
+      viaActivation    = rpcData.via_activation || false;
     }
   } catch (rpcErr) {
     console.error('[insertSolve] RPC call threw:', rpcErr.message);
@@ -87,7 +90,7 @@ async function insertSolve({ userId, anonSessionId, rawInput, mode, artifact }) 
   let sessionMeta = null;
   if (clusterSessionId) {
     try {
-      sessionMeta = await recomputeSessionName(clusterSessionId);
+      sessionMeta = await recomputeSessionName(clusterSessionId, viaActivation);
     } catch (nameErr) {
       console.error('[insertSolve] session naming error (non-fatal):', nameErr.message);
     }
@@ -99,7 +102,7 @@ async function insertSolve({ userId, anonSessionId, rawInput, mode, artifact }) 
   try { logEvent = require('./eventLog').logEvent; } catch { /* ignore */ }
 
   if (logEvent && clusterSessionId) {
-    if (boundaryCrossed) {
+    if (boundaryCrossed && !viaActivation) {
       logEvent({
         kind:       'session.cluster_boundary',
         severity:   'info',
@@ -137,7 +140,7 @@ async function insertSolve({ userId, anonSessionId, rawInput, mode, artifact }) 
   };
 }
 
-async function recomputeSessionName(sessionId) {
+async function recomputeSessionName(sessionId, viaActivation = false) {
   // Read session source and created_at
   const { data: session, error: sessErr } = await supabase
     .from('sessions')
@@ -147,7 +150,19 @@ async function recomputeSessionName(sessionId) {
 
   if (sessErr || !session) return null;
 
-  // For renamed/batch sessions, skip recompute but still return current name + created_at
+  // Freeze: a deliberate reopen-and-append turns an auto-label into a landmark the
+  // user navigated back to. Flip source before the auto-rename guard below so the
+  // rename is naturally skipped — no separate skip-condition needed.
+  if (viaActivation && session.source === 'auto') {
+    await supabase
+      .from('sessions')
+      .update({ source: 'reopened' })
+      .eq('id', sessionId)
+      .eq('source', 'auto'); // double-guard: never flip an already-renamed/batch session
+    return { name: session.name, created_at: session.created_at };
+  }
+
+  // For renamed/batch/reopened sessions, skip recompute but still return current name + created_at
   if (session.source !== 'auto') {
     return { name: session.name, created_at: session.created_at };
   }

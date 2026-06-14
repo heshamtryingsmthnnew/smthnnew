@@ -5,7 +5,7 @@
 export type SessionMeta = {
   id: string;
   name: string | null;
-  source: 'auto' | 'renamed' | 'batch';
+  source: 'auto' | 'renamed' | 'batch' | 'reopened';
   created_at: string;
   last_solve_at: string;
   solve_count: number;
@@ -70,6 +70,8 @@ export type Action =
   | { type: 'TOGGLE_SESSION'; sessionId: string }
   | { type: 'SET_SIDEBAR_COLLAPSED'; value: boolean }
   | { type: 'SESSION_RENAMED'; sessionId: string; name: string }
+  | { type: 'ACTIVATE_SESSION'; sessionId: string }
+  | { type: 'DEACTIVATE_SESSION' }
   // Reserved — unwired until delete brief:
   | { type: 'SOLVE_DELETED'; solveId: string }
   | { type: 'SESSION_DELETED'; sessionId: string }
@@ -244,6 +246,27 @@ export function sessionReducer(state: State, action: Action): State {
         },
       };
     }
+
+    case 'ACTIVATE_SESSION': {
+      const session = state.sessionsById[action.sessionId];
+      if (!session) return state;
+      return {
+        ...state,
+        activeSessionId: action.sessionId,
+        displayedSessionId: action.sessionId,
+        displayedSolveId: null,          // empty composer, not an old solve (§6b)
+        tabMicrocopy: null,              // clear any stale cue on deliberate entry
+      };
+    }
+
+    case 'DEACTIVATE_SESSION':
+      return {
+        ...state,
+        activeSessionId: null,
+        displayedSessionId: null,
+        displayedSolveId: null,
+        tabMicrocopy: null,
+      };
 
     // Reserved — no-ops until delete brief
     case 'SOLVE_DELETED':

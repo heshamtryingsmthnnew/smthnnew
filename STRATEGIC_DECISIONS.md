@@ -407,6 +407,31 @@ replaces it with server-side per-user monthly limits, which becomes the real cos
 control. Revisit if pre-launch Wolfram cost becomes material.
 
 ---
+## LOGGED DEFERRALS — surfaced reviewing the v4.8.0 durable-sessions migration
+
+Neither item below was introduced by the v4.8.0/v4.8.1 changes — both are
+pre-existing. Logging so they're not lost.
+
+### D1 — Orphan sessions on missing owner identity
+When a `/solve` request has neither a user id nor an `x-session-id` (anon)
+header, `get_or_create_active_session` matches nothing on both the activation
+and clustering paths and creates a fresh `'auto'` session on every solve —
+silently spawning orphans. Pre-existing in the original function.
+
+**Fix belongs at the header/identity layer** (ensure every request carries a
+stable owner key; reject or assign one if absent), not in the DB function.
+
+**Revisit trigger:** before launch / when anonymous solve volume matters.
+**Severity:** low now (localhost), real once public.
+
+### D2 — (resolved by Brief 6.1, kept for record) Auto-rename on append to reopened sessions
+Was: appending to an activated `'auto'` session would auto-rename it, breaking
+the landmark the user navigated back to. Resolved by the `'reopened'` freeze
+introduced in PHASE_5A_BRIEF_06_1 (v4.8.1) — see CLAUDE.md Principles &
+Learnings and §10 Current Code State. No further action; recorded so the
+reasoning is traceable.
+
+---
 ## REVISION LOG
 
 - **Initial draft** — Logged after conversation about moving from "validated solver" to potential "workflow environment." Decided to defer all expansion decisions until post-Phase 5 conversion data exists.

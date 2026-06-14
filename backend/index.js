@@ -2118,6 +2118,7 @@ Mode: physics`;
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
     const user = token ? getUserFromToken(token) : null;
     const anonSessionId = req.headers['x-session-id'] || null;
+    const activeSessionId = req.body?.active_session_id || null;
 
     let solveRow = null;
     try {
@@ -2127,6 +2128,7 @@ Mode: physics`;
         rawInput: rawInput,
         mode: safeMode,
         artifact,
+        activeSessionId,
       });
     } catch (dbErr) {
       console.error('[solve] DB log failed (non-fatal):', dbErr.message);
